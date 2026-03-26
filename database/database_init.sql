@@ -131,6 +131,6 @@ VALUES ('CENOU Ouagadougou', 'Ouagadougou', 'Avenue de l''Indépendance', 200);
 
 -- Utilisateur admin de test (mot de passe: admin123)
 INSERT INTO utilisateurs (matricule, nom, prenom, email, telephone, mot_de_passe, role) 
-VALUES ('ADMIN001', 'ADMIN', 'Système', 'admin@cenou.bf', '+22670000000', '$2a$10$xQH9z5L7qWJ5F0rY3nQ4zOqK4kHXvF.7JYC.1EqN0bWZH4V7ZH4V6', 'ADMIN');
+VALUES ('N000020261', 'Seraphin', 'Kabore', 'sera@gmail.com', '+22670000000', '$2a$10$xQH9z5L7qWJ5F0rY3nQ4zOqK4kHXvF.7JYC.1EqN0bWZH4V7ZH4V6', 'ETUDIANT');
 
 COMMIT;

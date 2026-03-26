@@ -12,11 +12,16 @@ const firebaseEnabled = process.env.FIREBASE_ENABLED !== 'false';
 if (firebaseEnabled) {
   try {
     // Charger le fichier de clé de service
-    const serviceAccountPath = path.resolve(__dirname, '../../config/firebase-service-account.json');
-    
-    console.log('📂 Chemin clé Firebase:', serviceAccountPath);
-    
-    const serviceAccount = require(serviceAccountPath);
+  let serviceAccount;
+
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    console.log('🔐 Firebase via variable d’environnement');
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  } else {
+    console.log('📂 Firebase via fichier local');
+    const serviceAccountPath = path.resolve(__dirname, './firebase-service-account.json');
+    serviceAccount = require(serviceAccountPath);
+  }
 
     // Vérifier que le fichier contient les bonnes données
     if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
@@ -26,10 +31,9 @@ if (firebaseEnabled) {
     console.log('🔑 Project ID Firebase:', serviceAccount.project_id);
 
     // Initialiser Firebase Admin SDK
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      projectId: serviceAccount.project_id,
-    });
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
 
     db = admin.firestore();
     messaging = admin.messaging();

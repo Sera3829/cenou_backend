@@ -1,26 +1,25 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Determine connection method based on presence of DATABASE_URL (Render) or individual variables (local)
-const useConnectionString = !!process.env.DATABASE_URL;
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is not defined');
+}
 
-// PostgreSQL connection pool configuration
 let pool;
 
-if (useConnectionString) {
-  // Render environment: use DATABASE_URL connection string
+// On utilise directement process.env.DATABASE_URL
+if (process.env.DATABASE_URL) {
   console.log('Connecting to PostgreSQL via DATABASE_URL');
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
-      rejectUnauthorized: false, // Required for Render PostgreSQL SSL certificates
+      rejectUnauthorized: false,
     },
-    max: 20,                     // Maximum number of connections
-    idleTimeoutMillis: 30000,    // Close idle connections after 30 seconds
+    max: 20,
+    idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 2000,
   });
 } else {
-  // Local development: use individual environment variables
   console.log('Connecting to PostgreSQL via individual variables');
   pool = new Pool({
     host: process.env.DB_HOST,
