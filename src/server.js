@@ -18,9 +18,15 @@ const centreRoutes = require('./routes/centreRoutes');
 const db = require('./config/database');
 
 // Vérification de la connexion PostgreSQL
-db.query('SELECT NOW()')
-  .then(res => console.log('PostgreSQL connecté:', res.rows[0]))
-  .catch(err => console.error('Erreur connexion PostgreSQL:', err));
+(async () => {
+  try {
+    const res = await db.query('SELECT NOW()');
+    console.log('PostgreSQL connecté:', res.rows[0]);
+  } catch (err) {
+    console.error('Erreur connexion PostgreSQL:', err);
+    process.exit(1); // stop serveur si DB morte
+  }
+})();
 
 // Middleware de gestion des erreurs
 const errorHandler = require('./middlewares/errorHandler');
