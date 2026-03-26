@@ -2,7 +2,9 @@ const { Pool } = require('pg');
 require('dotenv').config();
 
 // Determine connection method based on presence of DATABASE_URL (Render) or individual variables (local)
-const useConnectionString = !!process.env.DATABASE_URL;
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is not defined');
+}
 
 // PostgreSQL connection pool configuration
 let pool;
