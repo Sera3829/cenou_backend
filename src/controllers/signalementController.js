@@ -285,22 +285,78 @@ const getSignalementPhoto = async (req, res) => {
 const getAllSignalements = async (req, res) => {
   try {
     const { 
-      type,           // Filtre par type de problème
-      statut,         // Filtre par statut
-      centre_id,      // Filtre par centre
-      date_from,      // Filtre date de début
-      date_to,        // Filtre date de fin
-      search,         // Recherche texte
-      page = 1,       // Pagination
-      limit = 20      // Limite par page
+      type, statut, centre_id, date_from, date_to, search, page = 1, limit = 20
     } = req.query;
 
-    console.log('🔍 PARAMÈTRES REÇUS (backend signalements):', {
-      type, statut, centre_id, date_from, date_to, search, page, limit
-    });
+    console.log('🔍 PARAMÈTRES REÇUS:', { type, statut, centre_id, date_from, date_to, search, page, limit });
 
-    // ============ CONSTRUCTION DE LA REQUÊTE ============
-    let query = `
+    const params = [];
+    let paramIndex = 1;
+    let whereClause = '';
+
+    if (type && type !== 'TOUS') {
+      whereClause += ` AND s.type_probleme = $${paramIndex}`;
+      params.push(type);
+      paramIndex++;
+    }
+
+    if (statut && statut !== 'TOUS') {
+      whereClause += ` AND s.statut = $${paramIndex}`;
+      params.push(statut);
+      paramIndex++;
+    }
+
+    if (centre_id) {
+      whereClause += ` AND c.id = $${paramIndex}`;
+      params.push(parseInt(centre_id));
+      paramIndex++;
+    }
+
+    if (date_from) {
+      whereClause += ` AND DATE(s.created_at) >= $${paramIndex}`;
+      params.push(date_from);
+      paramIndex++;
+    }
+
+    if (date_to) {
+      whereClause += ` AND DATE(s.created_at) <= $${paramIndex}`;
+      params.push(date_to);
+      paramIndex++;
+    }
+
+    if (search && search.trim() !== '') {
+      const searchTerm = `%${search}%`;
+      whereClause += ` AND (
+        s.description ILIKE $${paramIndex} OR
+        s.numero_suivi ILIKE $${paramIndex} OR
+        u.nom ILIKE $${paramIndex} OR
+        u.prenom ILIKE $${paramIndex} OR
+        u.matricule ILIKE $${paramIndex} OR
+        c.nom ILIKE $${paramIndex}
+      )`;
+      params.push(searchTerm);
+      paramIndex++;
+    }
+
+    // COUNT
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM signalements s
+      LEFT JOIN attributions a ON s.attribution_id = a.id
+      LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+      LEFT JOIN logements l ON a.logement_id = l.id
+      LEFT JOIN centres c ON l.centre_id = c.id
+      WHERE 1=1 ${whereClause}
+    `;
+
+    const countResult = await db.query(countQuery, params);
+    const total = parseInt(countResult.rows[0].total);
+
+    // DONNÉES
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const dataParams = [...params, parseInt(limit), offset];
+
+    const dataQuery = `
       SELECT 
         s.id,
         s.numero_suivi,
@@ -312,128 +368,31 @@ const getAllSignalements = async (req, res) => {
         s.commentaire_resolution,
         s.created_at,
         s.updated_at,
-        s.numero_chambre,
-        s.nom_centre,
-        s.user_id,
-        
-        -- Informations étudiant (directement depuis la table utilisateurs)
+        s.attribution_id,
+        l.numero_chambre,
+        l.type as type_chambre,
+        c.nom as nom_centre,
+        c.ville,
+        c.id as centre_id,
         u.nom,
         u.prenom,
         u.matricule,
         u.telephone,
-        u.email,
-        
-        -- Informations centre si besoin
-        c.ville
+        u.email
       FROM signalements s
-      LEFT JOIN utilisateurs u ON s.user_id = u.id
-      LEFT JOIN centres c ON s.nom_centre = c.nom
-      WHERE 1=1
+      LEFT JOIN attributions a ON s.attribution_id = a.id
+      LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+      LEFT JOIN logements l ON a.logement_id = l.id
+      LEFT JOIN centres c ON l.centre_id = c.id
+      WHERE 1=1 ${whereClause}
+      ORDER BY s.created_at DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
 
-    const params = [];
-    let paramIndex = 1;
+    const result = await db.query(dataQuery, dataParams);
 
-    // ============ FILTRE TYPE ============
-    if (type && type !== 'TOUS') {
-      query += ` AND s.type_probleme = $${paramIndex}`;
-      params.push(type);
-      paramIndex++;
-      console.log(`✅ Filtre type appliqué: ${type}`);
-    }
+    console.log(`📊 ${result.rows.length} signalements trouvés sur ${total}`);
 
-    // ============ FILTRE STATUT ============
-    if (statut && statut !== 'TOUS') {
-      query += ` AND s.statut = $${paramIndex}`;
-      params.push(statut);
-      paramIndex++;
-      console.log(`✅ Filtre statut appliqué: ${statut}`);
-    }
-
-    // ============ FILTRE CENTRE ============
-    if (centre_id) {
-      query += ` AND s.nom_centre ILIKE $${paramIndex}`;
-      params.push(`%${centre_id}%`); // Recherche par nom
-      paramIndex++;
-      console.log(`✅ Filtre centre appliqué: ${centre_id}`);
-    }
-
-    // ============ FILTRE DATE DEBUT ============
-    if (date_from) {
-      query += ` AND DATE(s.created_at) >= $${paramIndex}`;
-      params.push(date_from);
-      paramIndex++;
-      console.log(`✅ Filtre date_from appliqué: ${date_from}`);
-    }
-
-    // ============ FILTRE DATE FIN ============
-    if (date_to) {
-      query += ` AND DATE(s.created_at) <= $${paramIndex}`;
-      params.push(date_to);
-      paramIndex++;
-      console.log(`✅ Filtre date_to appliqué: ${date_to}`);
-    }
-
-    // ============ RECHERCHE TEXTUELLE ============
-    if (search && search.trim() !== '') {
-      const searchTerm = `%${search}%`;
-      query += ` AND (
-        s.description ILIKE $${paramIndex} OR
-        s.numero_suivi ILIKE $${paramIndex} OR
-        u.nom ILIKE $${paramIndex} OR
-        u.prenom ILIKE $${paramIndex} OR
-        u.matricule ILIKE $${paramIndex} OR
-        u.telephone ILIKE $${paramIndex} OR
-        u.email ILIKE $${paramIndex} OR
-        s.nom_centre ILIKE $${paramIndex}
-      )`;
-      params.push(searchTerm);
-      paramIndex++;
-      console.log(`✅ Recherche appliquée: "${search}"`);
-    }
-
-    // ============ TRI ============
-    query += ` ORDER BY s.created_at DESC`;
-
-    // ============ PAGINATION ============
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    
-    // D'abord, obtenir le total COUNT
-    let countQuery = `SELECT COUNT(*) as total FROM signalements s`;
-    let countWhere = ` WHERE 1=1`;
-    const countParams = [];
-    
-    // Construire la clause WHERE pour le COUNT
-    if (params.length > 0) {
-      // Copier les conditions WHERE sans les JOINS inutiles
-      const baseQuery = query.split('FROM')[0] + 'FROM signalements s';
-      const whereClause = query.split('WHERE')[1];
-      const orderByIndex = whereClause.indexOf('ORDER BY');
-      
-      countQuery += ' WHERE ' + whereClause.substring(0, orderByIndex);
-      countParams.push(...params);
-    }
-
-    console.log(`📊 Count query: ${countQuery}`);
-    console.log(`📊 Count params: ${JSON.stringify(countParams)}`);
-
-    const countResult = await db.query(countQuery, countParams);
-    const total = parseInt(countResult.rows[0].total);
-
-    // ============ APPLIQUER LA PAGINATION ============
-    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-    params.push(parseInt(limit), offset);
-    
-    console.log(`📊 Page ${page}, Limit ${limit}, Offset ${offset}`);
-    console.log(`📊 Query finale: ${query}`);
-    console.log(`📊 Params: ${JSON.stringify(params)}`);
-
-    // ============ EXÉCUTER LA REQUÊTE ============
-    const result = await db.query(query, params);
-
-    console.log(`📊 Résultats: ${result.rows.length} signalements trouvés sur ${total} total`);
-
-    // ============ FORMATER LA RÉPONSE ============
     const formattedSignalements = result.rows.map(s => ({
       id: s.id,
       numero_suivi: s.numero_suivi,
@@ -445,50 +404,34 @@ const getAllSignalements = async (req, res) => {
       commentaire_resolution: s.commentaire_resolution,
       created_at: s.created_at,
       updated_at: s.updated_at,
-      
-      // Informations étudiant
       etudiant_nom_complet: `${s.nom || ''} ${s.prenom || ''}`.trim() || 'Non spécifié',
+      nom: s.nom,
+      prenom: s.prenom,
       matricule: s.matricule,
       telephone: s.telephone,
       email: s.email,
-      
-      // Informations centre (déjà dans la table signalements)
       nom_centre: s.nom_centre,
       ville: s.ville || 'Non spécifiée',
-      
-      // Chambre (déjà dans la table signalements)
       numero_chambre: s.numero_chambre,
-      
-      // Pour la compatibilité avec l'ancien code
-      type_chambre: 'Standard', // Valeur par défaut ou à récupérer d'ailleurs
-      
-      // Métadonnées
+      type_chambre: s.type_chambre || 'Standard',
+      centre_id: s.centre_id,
       photos_count: Array.isArray(s.photos) ? s.photos.length : 0,
     }));
 
     res.json({
       success: true,
       signalements: formattedSignalements,
-      total: total,
+      total,
       page: parseInt(page),
-      totalPages: Math.ceil(total / limit),
-      filters_applied: {
-        type: type || null,
-        statut: statut || null,
-        centre_id: centre_id || null,
-        date_from: date_from || null,
-        date_to: date_to || null,
-        search: search || null
-      }
+      totalPages: Math.ceil(total / parseInt(limit)),
     });
 
   } catch (error) {
-    console.error('❌ Erreur dans getAllSignalements:', error);
-    console.error('❌ Stack trace:', error.stack);
+    console.error('❌ Erreur getAllSignalements:', error);
     res.status(500).json({
       success: false,
       error: 'Erreur serveur lors de la récupération des signalements',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      details: error.message
     });
   }
 };
@@ -506,14 +449,17 @@ const updateSignalementStatut = async (req, res) => {
 
     // Vérifier que le signalement existe
     const checkResult = await client.query(
-      `SELECT s.id, s.statut, s.user_id, s.numero_suivi,
-              u.nom, u.prenom, u.matricule, u.telephone, u.email,
-              s.numero_chambre, s.nom_centre, s.photos
-       FROM signalements s
-       LEFT JOIN utilisateurs u ON s.user_id = u.id
-       WHERE s.id = $1`,
-      [signalementId]
-    );
+  `SELECT s.id, s.statut, s.attribution_id, s.numero_suivi, s.photos,
+          u.id as user_id, u.nom, u.prenom, u.matricule, u.telephone, u.email,
+          l.numero_chambre, c.nom as nom_centre
+   FROM signalements s
+   LEFT JOIN attributions a ON s.attribution_id = a.id
+   LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+   LEFT JOIN logements l ON a.logement_id = l.id
+   LEFT JOIN centres c ON l.centre_id = c.id
+   WHERE s.id = $1`,
+  [signalementId]
+);
 
     if (checkResult.rows.length === 0) {
       return res.status(404).json({
