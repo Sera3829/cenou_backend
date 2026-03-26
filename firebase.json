@@ -1,0 +1,8 @@
+{
+  "firestore": {
+    "database": "cenoudb",
+    "location": "eur3",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}
