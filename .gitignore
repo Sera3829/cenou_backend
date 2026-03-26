@@ -3,4 +3,5 @@ node_modules/
 logs/
 config/firebase-service-account.json
 rapports/
+test/
 uploads/

@@ -1,49 +1,82 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Configuration du pool de connexions PostgreSQL
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  max: 20, // Nombre maximum de connexions
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
-});
+// Determine connection method based on presence of DATABASE_URL (Render) or individual variables (local)
+const useConnectionString = !!process.env.DATABASE_URL;
 
-// Test de connexion au démarrage
+// PostgreSQL connection pool configuration
+let pool;
+
+if (useConnectionString) {
+  // Render environment: use DATABASE_URL connection string
+  console.log('Connecting to PostgreSQL via DATABASE_URL');
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false, // Required for Render PostgreSQL SSL certificates
+    },
+    max: 20,                     // Maximum number of connections
+    idleTimeoutMillis: 30000,    // Close idle connections after 30 seconds
+    connectionTimeoutMillis: 2000,
+  });
+} else {
+  // Local development: use individual environment variables
+  console.log('Connecting to PostgreSQL via individual variables');
+  pool = new Pool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
+  });
+}
+
+// Connection event handler
 pool.on('connect', () => {
-  console.log('✅ Connexion PostgreSQL établie');
+  console.log('PostgreSQL connection established');
 });
 
+// Error event handler (pool will attempt to reconnect automatically)
 pool.on('error', (err) => {
-  console.error('❌ Erreur PostgreSQL:', err);
-  process.exit(-1);
+  console.error('PostgreSQL error:', err);
 });
 
-// Fonction helper pour exécuter des requêtes
+/**
+ * Execute a SQL query with optional parameters.
+ * Logs execution time and result row count.
+ *
+ * @param {string} text - SQL query string
+ * @param {Array} [params] - Query parameters
+ * @returns {Promise<object>} Query result object
+ */
 const query = async (text, params) => {
   const start = Date.now();
   try {
     const res = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('Requête exécutée:', { text, duration, rows: res.rowCount });
+    console.log('Query executed:', { text, duration, rows: res.rowCount });
     return res;
   } catch (error) {
-    console.error('Erreur requête PostgreSQL:', error);
+    console.error('PostgreSQL query error:', error);
     throw error;
   }
 };
 
-// Fonction pour obtenir un client avec transaction
+/**
+ * Acquire a client from the pool for transaction handling.
+ * The returned client has its own query method and a release method.
+ *
+ * @returns {Promise<object>} A client with query and release methods
+ */
 const getClient = async () => {
   const client = await pool.connect();
   const query = client.query.bind(client);
   const release = client.release.bind(client);
 
-  // Wrapper pour gérer les transactions
+  // Wrap the client's query method to preserve transaction context
   client.query = (...args) => {
     return query(...args);
   };

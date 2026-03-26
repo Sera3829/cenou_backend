@@ -123,7 +123,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Port: ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Réseau: http://192.168.11.124:${PORT}`);
+  console.log(`Réseau: https://cenou-backend.onrender.com:${PORT}`);
   console.log(`CORS activé pour toutes les origines (*)`);
   console.log(`Routes disponibles:`);
   console.log(`   POST /api/auth/login`);
