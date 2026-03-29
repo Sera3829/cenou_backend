@@ -54,8 +54,6 @@ const creerSignalement = async (req, res) => {
   return `/uploads/signalements/${path.basename(r.path)}`;
 });
 
-    }
-
     // Créer le signalement
     const user = req.user; // ← injecté par authenticateToken
 
@@ -120,7 +118,7 @@ const creerSignalement = async (req, res) => {
     commentaire_resolution: null,
     date_resolution: null,
   },
-});
+});}
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Erreur lors de la création du signalement:', error);
