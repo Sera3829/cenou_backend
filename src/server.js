@@ -18,9 +18,15 @@ const centreRoutes = require('./routes/centreRoutes');
 const db = require('./config/database');
 
 // Vérification de la connexion PostgreSQL
-db.query('SELECT NOW()')
-  .then(res => console.log('PostgreSQL connecté:', res.rows[0]))
-  .catch(err => console.error('Erreur connexion PostgreSQL:', err));
+(async () => {
+  try {
+    const res = await db.query('SELECT NOW()');
+    console.log('PostgreSQL connecté:', res.rows[0]);
+  } catch (err) {
+    console.error('Erreur connexion PostgreSQL:', err);
+    process.exit(1); // stop serveur si DB morte
+  }
+})();
 
 // Middleware de gestion des erreurs
 const errorHandler = require('./middlewares/errorHandler');
@@ -123,7 +129,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Port: ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Local: http://localhost:${PORT}`);
+<<<<<<< HEAD
   console.log(`Réseau: https://cenou-backend.onrender.com:${PORT}`);
+=======
+  console.log(`Réseau: https://cenou-backend.onrender.com`);
+>>>>>>> 09b263c453a70cb0af441ce6f59f051351cc3625
   console.log(`CORS activé pour toutes les origines (*)`);
   console.log(`Routes disponibles:`);
   console.log(`   POST /api/auth/login`);
