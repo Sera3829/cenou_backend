@@ -318,22 +318,22 @@ const getAllSignalements = async (req, res) => {
         s.commentaire_resolution,
         s.created_at,
         s.updated_at,
-        s.numero_chambre,
-        s.nom_centre,
-        s.user_id,
-        
-        -- Informations étudiant (directement depuis la table utilisateurs)
+        s.attribution_id,
+        l.numero_chambre,
+        l.type as type_chambre,
+        c.nom as nom_centre,
+        c.ville,
+        c.id as centre_id,
         u.nom,
         u.prenom,
         u.matricule,
         u.telephone,
-        u.email,
-        
-        -- Informations centre si besoin
-        c.ville
+        u.email
       FROM signalements s
-      LEFT JOIN utilisateurs u ON s.user_id = u.id
-      LEFT JOIN centres c ON s.nom_centre = c.nom
+      LEFT JOIN attributions a ON s.attribution_id = a.id
+      LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+      LEFT JOIN logements l ON a.logement_id = l.id
+      LEFT JOIN centres c ON l.centre_id = c.id
       WHERE 1=1
     `;
 
@@ -403,22 +403,18 @@ const getAllSignalements = async (req, res) => {
 
     // ============ PAGINATION ============
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    
-    // D'abord, obtenir le total COUNT
-    let countQuery = `SELECT COUNT(*) as total FROM signalements s`;
-    let countWhere = ` WHERE 1=1`;
-    const countParams = [];
-    
-    // Construire la clause WHERE pour le COUNT
-    if (params.length > 0) {
-      // Copier les conditions WHERE sans les JOINS inutiles
-      const baseQuery = query.split('FROM')[0] + 'FROM signalements s';
-      const whereClause = query.split('WHERE')[1];
-      const orderByIndex = whereClause.indexOf('ORDER BY');
-      
-      countQuery += ' WHERE ' + whereClause.substring(0, orderByIndex);
-      countParams.push(...params);
-    }
+
+    // COUNT avec les bons JOINs
+    const countQuery = `
+      SELECT COUNT(*) as total 
+      FROM signalements s
+      LEFT JOIN attributions a ON s.attribution_id = a.id
+      LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+      LEFT JOIN logements l ON a.logement_id = l.id
+      LEFT JOIN centres c ON l.centre_id = c.id
+      WHERE 1=1 ${params.length > 0 ? query.split('WHERE 1=1')[1].split('ORDER BY')[0] : ''}
+    `;
+    const countParams = [...params];
 
     console.log(`📊 Count query: ${countQuery}`);
     console.log(`📊 Count params: ${JSON.stringify(countParams)}`);
