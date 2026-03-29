@@ -1,6 +1,6 @@
 const db = require('../config/database');
 const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
-const { compressMultipleImages, deleteFiles } = require('../utils/imageProcessor');
+const { deleteFiles } = require('../utils/imageProcessor');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -46,13 +46,21 @@ const creerSignalement = async (req, res) => {
     await client.query('BEGIN');
 
     // Compresser les photos si nécessaire
-    let photoPaths = [];
-    if (photos.length > 0) {
-      console.log(`📸 Compression de ${photos.length} photo(s)...`);
-      const compressionResults = await compressMultipleImages(photos.map(f => f.path));
-      photoPaths = compressionResults.map(r => {
-  return `/uploads/signalements/${path.basename(r.path)}`;
-});
+const { uploadImage } = require('../config/cloudinary');
+
+let photoPaths = [];
+if (photos.length > 0) {
+  console.log(`📸 Upload de ${photos.length} photo(s) vers Cloudinary...`);
+  for (const photo of photos) {
+    try {
+      const url = await uploadImage(photo.path, 'cenou/signalements');
+      photoPaths.push(url);
+      console.log(`✅ Photo uploadée: ${url}`);
+    } catch (err) {
+      console.error(`❌ Erreur upload photo: ${err.message}`);
+    }
+  }
+  deleteFiles(photos.map(f => f.path));
 
     // Créer le signalement
     const user = req.user; // ← injecté par authenticateToken
