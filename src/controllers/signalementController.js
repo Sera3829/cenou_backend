@@ -320,7 +320,7 @@ const getAllSignalements = async (req, res) => {
         s.updated_at,
         s.attribution_id,
         l.numero_chambre,
-        l.type as type_chambre,
+        l.type_chambre,
         c.nom as nom_centre,
         c.ville,
         c.id as centre_id,
