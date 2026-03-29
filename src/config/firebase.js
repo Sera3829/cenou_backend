@@ -9,7 +9,6 @@ const firebaseEnabled = process.env.FIREBASE_ENABLED !== 'false';
 
 if (firebaseEnabled) {
   try {
-<<<<<<< HEAD
     // Charger le fichier de clé de service
   let serviceAccount;
 
@@ -21,21 +20,6 @@ if (firebaseEnabled) {
     const serviceAccountPath = path.resolve(__dirname, './firebase-service-account.json');
     serviceAccount = require(serviceAccountPath);
   }
-=======
-    let serviceAccount;
-
-    // ✅ Sur Render : utiliser la variable d'environnement
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      console.log('🔑 Chargement Firebase depuis FIREBASE_SERVICE_ACCOUNT');
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    } else {
-      // ✅ En local : utiliser le fichier
-      const path = require('path');
-      const serviceAccountPath = path.resolve(__dirname, '../../config/firebase-service-account.json');
-      console.log('📂 Chargement Firebase depuis fichier:', serviceAccountPath);
-      serviceAccount = require(serviceAccountPath);
-    }
->>>>>>> 09b263c453a70cb0af441ce6f59f051351cc3625
 
     if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
       throw new Error('Credentials Firebase invalides ou incomplets');
@@ -43,33 +27,19 @@ if (firebaseEnabled) {
 
     console.log('🔑 Project ID Firebase:', serviceAccount.project_id);
 
-<<<<<<< HEAD
     // Initialiser Firebase Admin SDK
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
-=======
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      projectId: serviceAccount.project_id,
-    });
->>>>>>> 09b263c453a70cb0af441ce6f59f051351cc3625
 
     db = admin.firestore();
     messaging = admin.messaging();
     firebaseInitialized = true;
 
-    console.log('✅ Firebase Admin initialisé avec succès');
 
     testFirestoreConnection();
 
   } catch (error) {
-    console.error('❌ Erreur initialisation Firebase:', error.message);
-    console.error('⚠️ Firebase désactivé - mode dégradé');
-  }
-} else {
-  console.log('⚠️ Firebase désactivé via configuration');
-}
 
 async function testFirestoreConnection() {
   if (!db) return;
@@ -88,3 +58,4 @@ async function testFirestoreConnection() {
 const isFirebaseAvailable = () => firebaseInitialized;
 
 module.exports = { admin, db, messaging, isFirebaseAvailable };
+}}
