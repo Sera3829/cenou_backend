@@ -131,7 +131,7 @@ const initierPaiement = async (req, res) => {
 
   try {
     const userId = req.user.id;
-    const { montant, mode_paiement, numero_telephone } = req.body;
+    const { montant, mode_paiement, numero_telephone, nombre_mois } = req.body;
 
     // Validation du mode de paiement
     if (!['ORANGE_MONEY', 'MOOV_MONEY'].includes(mode_paiement)) {
@@ -141,7 +141,15 @@ const initierPaiement = async (req, res) => {
       });
     }
 
-    // Vérifier que l'utilisateur a une attribution active
+    // Validation du nombre de mois
+    const nbMois = parseInt(nombre_mois) || 1;
+    if (nbMois < 1 || nbMois > 24) {
+      return res.status(400).json({
+        error: 'Le nombre de mois doit être entre 1 et 24',
+      });
+    }
+
+    // Vérifier l'attribution active
     const attributionResult = await client.query(
       `SELECT a.id, l.prix_mensuel, c.nom as nom_centre
        FROM attributions a
@@ -159,36 +167,49 @@ const initierPaiement = async (req, res) => {
     }
 
     const attribution = attributionResult.rows[0];
+    const loyerMensuel = parseFloat(attribution.prix_mensuel);
+    const montantAttendu = loyerMensuel * nbMois;
 
-    // Vérifier que le montant correspond au loyer
-    if (parseFloat(montant) !== parseFloat(attribution.prix_mensuel)) {
+    // Vérifier que le montant est un multiple exact du loyer
+    if (parseFloat(montant) !== montantAttendu) {
       return res.status(400).json({
-        error: 'Le montant ne correspond pas au loyer mensuel',
-        montant_attendu: attribution.prix_mensuel,
+        error: `Le montant doit être un multiple du loyer mensuel (${loyerMensuel} FCFA)`,
+        montant_attendu: montantAttendu,
+        loyer_mensuel: loyerMensuel,
+        nombre_mois: nbMois,
       });
     }
 
-    // Générer une référence unique de transaction
-    const reference = `CENOU-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-
-    // Calculer la date d'échéance (fin du mois en cours)
+    // Calculer les dates
+    const datePaiement = new Date();
+    
+    // Date d'échéance = fin du mois en cours
     const dateEcheance = new Date();
     dateEcheance.setMonth(dateEcheance.getMonth() + 1);
-    dateEcheance.setDate(0); // Dernier jour du mois
+    dateEcheance.setDate(0);
+
+    // Date de fin = date paiement + nombre de mois
+    const dateFin = new Date(datePaiement);
+    dateFin.setMonth(dateFin.getMonth() + nbMois);
+    dateFin.setDate(dateFin.getDate() - 1); // Dernier jour de la période
+
+    // Générer la référence
+    const reference = `CENOU-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
     await client.query('BEGIN');
 
-    // Créer le paiement avec statut EN_ATTENTE
+    // Créer le paiement
     const paiementResult = await client.query(
-      `INSERT INTO paiements (attribution_id, montant, date_echeance, mode_paiement, reference_transaction, statut)
-       VALUES ($1, $2, $3, $4, $5, 'EN_ATTENTE')
+      `INSERT INTO paiements 
+         (attribution_id, montant, date_echeance, date_fin, nombre_mois, mode_paiement, reference_transaction, statut)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'EN_ATTENTE')
        RETURNING id, reference_transaction`,
-      [attribution.id, montant, dateEcheance, mode_paiement, reference]
+      [attribution.id, montant, dateEcheance, dateFin, nbMois, mode_paiement, reference]
     );
 
     const paiement = paiementResult.rows[0];
 
-    // Enregistrer la transaction initiale
+    // Enregistrer la transaction
     await client.query(
       `INSERT INTO transactions (paiement_id, montant, statut, details)
        VALUES ($1, $2, 'INITIE', $3)`,
@@ -199,6 +220,10 @@ const initierPaiement = async (req, res) => {
           mode_paiement,
           numero_telephone,
           reference,
+          nombre_mois: nbMois,
+          loyer_mensuel: loyerMensuel,
+          date_debut: datePaiement.toISOString(),
+          date_fin: dateFin.toISOString(),
           timestamp: new Date().toISOString(),
         }),
       ]
@@ -206,30 +231,21 @@ const initierPaiement = async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Initier le paiement avec l'opérateur mobile money
+    // Initier paiement mobile money
     let paiementUrl = null;
     let externalTransactionId = null;
 
     try {
       if (mode_paiement === 'ORANGE_MONEY') {
-        const orangeResult = await initierOrangeMoney(
-          montant,
-          numero_telephone,
-          reference
-        );
+        const orangeResult = await initierOrangeMoney(montant, numero_telephone, reference);
         paiementUrl = orangeResult.payment_url;
         externalTransactionId = orangeResult.transaction_id;
       } else if (mode_paiement === 'MOOV_MONEY') {
-        const moovResult = await initierMoovMoney(
-          montant,
-          numero_telephone,
-          reference
-        );
+        const moovResult = await initierMoovMoney(montant, numero_telephone, reference);
         paiementUrl = moovResult.payment_url;
         externalTransactionId = moovResult.transaction_id;
       }
 
-      // Mettre à jour le paiement avec l'ID externe
       if (externalTransactionId) {
         await client.query(
           `UPDATE paiements SET reference_transaction = $1 WHERE id = $2`,
@@ -237,14 +253,11 @@ const initierPaiement = async (req, res) => {
         );
       }
     } catch (paymentError) {
-      console.error('Erreur initiation paiement mobile money:', paymentError);
-      
-      // Marquer le paiement comme échoué
+      console.error('Erreur initiation mobile money:', paymentError);
       await client.query(
         `UPDATE paiements SET statut = 'ECHEC' WHERE id = $1`,
         [paiement.id]
       );
-
       return res.status(500).json({
         error: 'Erreur lors de l\'initiation du paiement mobile money',
         details: paymentError.message,
@@ -257,14 +270,19 @@ const initierPaiement = async (req, res) => {
         id: paiement.id,
         reference: paiement.reference_transaction,
         montant: montant,
+        nombre_mois: nbMois,
+        loyer_mensuel: loyerMensuel,
         mode_paiement: mode_paiement,
         statut: 'EN_ATTENTE',
+        date_debut: datePaiement.toISOString().split('T')[0],
+        date_fin: dateFin.toISOString().split('T')[0],
         payment_url: paiementUrl,
       },
     });
+
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Erreur lors de l\'initiation du paiement:', error);
+    console.error('Erreur initiation paiement:', error);
     res.status(500).json({
       error: 'Erreur lors de l\'initiation du paiement',
       details: error.message,

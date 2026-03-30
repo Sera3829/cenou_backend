@@ -56,6 +56,55 @@ router.get(
 );
 
 /**
+ * @route   GET /api/paiements/loyer
+ * @desc    Récupérer le loyer mensuel de l'étudiant connecté
+ * @access  Private (Étudiant)
+ */
+router.get(
+  '/loyer',
+  authenticateToken,
+  authorizeRoles('ETUDIANT'),
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+
+      const result = await db.query(
+        `SELECT 
+           l.prix_mensuel,
+           l.numero_chambre,
+           l.type_chambre,
+           c.nom as nom_centre,
+           a.date_debut
+         FROM attributions a
+         JOIN logements l ON a.logement_id = l.id
+         JOIN centres c ON l.centre_id = c.id
+         WHERE a.utilisateur_id = $1 
+           AND a.statut = 'ACTIVE'
+         LIMIT 1`,
+        [userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          error: 'Aucune attribution active trouvée',
+        });
+      }
+
+      res.json({
+        success: true,
+        data: result.rows[0],
+      });
+    } catch (error) {
+      console.error('Erreur récupération loyer:', error);
+      res.status(500).json({
+        error: 'Erreur lors de la récupération du loyer',
+        details: error.message,
+      });
+    }
+  }
+);
+
+/**
  * @route   GET /api/paiements/:id
  * @desc    Récupérer les détails d'un paiement
  * @access  Private (Étudiant)
