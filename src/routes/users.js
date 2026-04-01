@@ -390,7 +390,7 @@ router.get('/admin/etudiants',
 router.put(
   '/admin/:id/statut',
   authenticateToken,
-  authorizeRoles('ADMIN'),
+  authorizeRoles('ADMIN', 'GESTIONNAIRE'),
   [
     param('id')
       .isInt()

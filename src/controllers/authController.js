@@ -152,7 +152,34 @@ const login = async (req, res) => {
       });
     }
 
-    // 🔒 NOUVEAU : Bloquer Admin/Gestionnaire sur mobile
+    // Vérifier si une session active existe déjà
+    if (isFirebaseAvailable()) {
+      try {
+        const sessionDoc = await firebaseDb
+          .collection('sessions')
+          .doc(user.id.toString())
+          .get();
+
+        if (sessionDoc.exists) {
+          const sessionData = sessionDoc.data();
+          const expiresAt = new Date(sessionData.expiresAt);
+          const now = new Date();
+
+          // Si la session n'est pas encore expirée → bloquer
+          if (expiresAt > now) {
+            return res.status(409).json({
+              error: 'Une session est déjà active pour ce compte. Veuillez vous déconnecter d\'abord.',
+            });
+          }
+          // Si expirée → on laisse passer et on écrasera l'ancienne session
+        }
+      } catch (firebaseError) {
+        console.error('⚠️ Erreur vérification session Firebase:', firebaseError.message);
+        // Non bloquant : si Firebase est indisponible, on laisse passer
+      }
+    }
+
+    // Bloquer Admin/Gestionnaire sur mobile
     // Le frontend mobile envoie un header 'x-platform: mobile'
     const platform = req.headers['x-platform'] || '';
     const userAgent = req.headers['user-agent'] || '';
