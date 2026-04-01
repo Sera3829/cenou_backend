@@ -285,36 +285,57 @@ const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // NOUVEAU CODE (avec JOIN)
-const result = await db.query(
-  `SELECT 
-    u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 
-    u.role, u.statut, u.created_at,
-    l.numero_chambre,
-    l.type_chambre,
-    l.prix_mensuel::integer AS loyer_mensuel,  -- ✅ Cast en integer
-    c.nom AS nom_centre,
-    c.ville,
-    a.date_debut,
-    a.date_fin,
-    a.statut AS statut_attribution
-   FROM utilisateurs u
-   LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
-   LEFT JOIN logements l ON a.logement_id = l.id
-   LEFT JOIN centres c ON l.centre_id = c.id
-   WHERE u.id = $1`,
-  [userId]
-);
+    // 🔒 Vérifier que le token actuel correspond à la session Firebase active
+    if (isFirebaseAvailable()) {
+      try {
+        const sessionDoc = await firebaseDb
+          .collection('sessions')
+          .doc(userId.toString())
+          .get();
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Utilisateur introuvable',
-      });
+        if (sessionDoc.exists) {
+          const sessionData = sessionDoc.data();
+          const currentToken = req.headers['authorization']?.replace('Bearer ', '');
+          
+          // Si le token ne correspond pas à la session active → session invalide
+          if (sessionData.token && sessionData.token !== currentToken) {
+            return res.status(401).json({
+              error: 'Session invalide. Veuillez vous reconnecter.',
+            });
+          }
+        }
+      } catch (firebaseError) {
+        console.error('⚠️ Erreur vérification session Firebase:', firebaseError.message);
+        // Non bloquant
+      }
     }
 
-    res.json({
-      user: result.rows[0],
-    });
+    const result = await db.query(
+      `SELECT 
+        u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 
+        u.role, u.statut, u.created_at,
+        l.numero_chambre,
+        l.type_chambre,
+        l.prix_mensuel::integer AS loyer_mensuel,
+        c.nom AS nom_centre,
+        c.ville,
+        a.date_debut,
+        a.date_fin,
+        a.statut AS statut_attribution
+       FROM utilisateurs u
+       LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
+       LEFT JOIN logements l ON a.logement_id = l.id
+       LEFT JOIN centres c ON l.centre_id = c.id
+       WHERE u.id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+
+    res.json({ user: result.rows[0] });
+
   } catch (error) {
     console.error('Erreur lors de la récupération du profil:', error);
     res.status(500).json({
