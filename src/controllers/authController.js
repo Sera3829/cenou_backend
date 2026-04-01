@@ -108,25 +108,25 @@ const login = async (req, res) => {
     const { identifiant, mot_de_passe } = req.body;
 
     // Rechercher l'utilisateur par matricule OU email
-const result = await db.query(
-  `SELECT 
-    u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 
-    u.mot_de_passe, u.role, u.statut,
-    l.numero_chambre,
-    l.type_chambre,
-    l.prix_mensuel::integer AS loyer_mensuel,  -- ✅ Cast en integer
-    c.nom AS nom_centre,
-    c.ville,
-    a.date_debut,
-    a.date_fin,
-    a.statut AS statut_attribution
-   FROM utilisateurs u
-   LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
-   LEFT JOIN logements l ON a.logement_id = l.id
-   LEFT JOIN centres c ON l.centre_id = c.id
-   WHERE (u.matricule = $1 OR u.email = $1)`,
-  [identifiant]
-);
+    const result = await db.query(
+      `SELECT 
+        u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 
+        u.mot_de_passe, u.role, u.statut,
+        l.numero_chambre,
+        l.type_chambre,
+        l.prix_mensuel::integer AS loyer_mensuel,  -- ✅ Cast en integer
+        c.nom AS nom_centre,
+        c.ville,
+        a.date_debut,
+        a.date_fin,
+        a.statut AS statut_attribution
+       FROM utilisateurs u
+       LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
+       LEFT JOIN logements l ON a.logement_id = l.id
+       LEFT JOIN centres c ON l.centre_id = c.id
+       WHERE (u.matricule = $1 OR u.email = $1)`,
+      [identifiant]
+    );
 
     if (result.rows.length === 0) {
       return res.status(401).json({
@@ -149,6 +149,18 @@ const result = await db.query(
     if (!isPasswordValid) {
       return res.status(401).json({
         error: 'Identifiant ou mot de passe incorrect',
+      });
+    }
+
+    // 🔒 NOUVEAU : Bloquer Admin/Gestionnaire sur mobile
+    // Le frontend mobile envoie un header 'x-platform: mobile'
+    const platform = req.headers['x-platform'] || '';
+    const userAgent = req.headers['user-agent'] || '';
+    const isMobileRequest = platform === 'mobile';
+
+    if (isMobileRequest && ['ADMIN', 'GESTIONNAIRE'].includes(user.role)) {
+      return res.status(403).json({
+        error: 'Accès non autorisé. Les administrateurs et gestionnaires doivent utiliser le dashboard web.',
       });
     }
 
@@ -182,23 +194,23 @@ const result = await db.query(
     );
 
     res.json({
-  message: 'Connexion réussie',
-  user: {
-    id: user.id,
-    matricule: user.matricule,
-    nom: user.nom,
-    prenom: user.prenom,
-    email: user.email,
-    telephone: user.telephone,
-    role: user.role,
-    numero_chambre: user.numero_chambre,
-    nom_centre: user.nom_centre,          
-    loyer_mensuel: user.loyer_mensuel,      
-    date_debut: user.date_debut,            
-    date_fin: user.date_fin,                  
-  },
-  token: token,
-});
+      message: 'Connexion réussie',
+      user: {
+        id: user.id,
+        matricule: user.matricule,
+        nom: user.nom,
+        prenom: user.prenom,
+        email: user.email,
+        telephone: user.telephone,
+        role: user.role,
+        numero_chambre: user.numero_chambre,
+        nom_centre: user.nom_centre,
+        loyer_mensuel: user.loyer_mensuel,
+        date_debut: user.date_debut,
+        date_fin: user.date_fin,
+      },
+      token: token,
+    });
   } catch (error) {
     console.error('Erreur lors de la connexion:', error);
     res.status(500).json({

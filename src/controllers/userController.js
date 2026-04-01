@@ -332,17 +332,28 @@ const deactivateAccount = async (req, res) => {
  */
 const updateUserStatus = async (req, res) => {
   try {
-    // Vérifier que l'utilisateur est admin
-    if (req.user.role !== 'ADMIN') {
-      return res.status(403).json({
-        error: 'Accès refusé. Réservé aux administrateurs.',
-      });
-    }
-
     const { id } = req.params;
     const { statut } = req.body;
+    const actor = req.user; // l'utilisateur qui fait l'action
 
-    console.log(`🔧 Mise à jour statut utilisateur ${id} → ${statut}`);
+    // Vérifier que l'utilisateur cible existe
+    const checkUser = await db.query(
+      'SELECT id, nom, prenom, role FROM utilisateurs WHERE id = $1',
+      [id]
+    );
+
+    if (checkUser.rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+
+    const targetUser = checkUser.rows[0];
+
+    // 🔒 NOUVEAU : Un GESTIONNAIRE ne peut pas modifier le statut d'un ADMIN
+    if (actor.role === 'GESTIONNAIRE' && targetUser.role === 'ADMIN') {
+      return res.status(403).json({
+        error: 'Accès refusé. Un gestionnaire ne peut pas modifier le statut d\'un administrateur.',
+      });
+    }
 
     // Valider le statut
     const validStatuts = ['ACTIF', 'INACTIF', 'SUSPENDU'];
@@ -351,20 +362,6 @@ const updateUserStatus = async (req, res) => {
         error: 'Statut invalide. Valeurs acceptées: ACTIF, INACTIF, SUSPENDU',
       });
     }
-
-    // Vérifier que l'utilisateur existe
-    const checkUser = await db.query(
-      'SELECT id, nom, prenom, role FROM utilisateurs WHERE id = $1',
-      [id]
-    );
-
-    if (checkUser.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Utilisateur introuvable',
-      });
-    }
-
-    const user = checkUser.rows[0];
 
     // Mettre à jour le statut
     const result = await db.query(
@@ -375,15 +372,12 @@ const updateUserStatus = async (req, res) => {
       [statut, id]
     );
 
-    console.log(`✅ Statut utilisateur ${id} mis à jour: ${statut}`);
-
     res.json({
       success: true,
       message: 'Statut mis à jour avec succès',
-      data: {
-        user: result.rows[0],
-      },
+      data: { user: result.rows[0] },
     });
+
   } catch (error) {
     console.error('❌ Erreur updateUserStatus:', error);
     res.status(500).json({

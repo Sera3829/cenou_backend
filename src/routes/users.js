@@ -716,7 +716,7 @@ router.post(
 router.put(
   '/admin/:id',
   authenticateToken,
-  authorizeRoles('ADMIN'),
+  authorizeRoles('ADMIN', 'GESTIONNAIRE'),
   [
     param('id')
       .isInt()
