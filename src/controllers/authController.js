@@ -285,7 +285,7 @@ const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // ✅ NOUVEAU CODE (avec JOIN)
+    // NOUVEAU CODE (avec JOIN)
 const result = await db.query(
   `SELECT 
     u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 

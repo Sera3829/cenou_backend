@@ -524,7 +524,7 @@ router.get(
 router.post(
   '/admin/create',
   authenticateToken,
-  authorizeRoles('ADMIN'),
+  authorizeRoles('ADMIN', 'GESTIONNAIRE'),
   [
     body('matricule')
       .trim()
