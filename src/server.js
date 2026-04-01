@@ -42,7 +42,7 @@ app.use(cors({
   origin: '*',                    // À restreindre en production
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-platform']
 }));
 
 // Gestion des requêtes preflight OPTIONS
