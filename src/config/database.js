@@ -5,90 +5,84 @@ if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is not defined');
 }
 
-let pool;
+console.log('Connecting to PostgreSQL via DATABASE_URL');
 
-// On utilise directement process.env.DATABASE_URL
-if (process.env.DATABASE_URL) {
-  console.log('Connecting to PostgreSQL via DATABASE_URL');
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-      rejectUnauthorized: false,
-    },
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
-  });
-} else {
-  console.log('Connecting to PostgreSQL via individual variables');
-  pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
-  });
-}
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 
-// Connection event handler
+  // Neon serverless : max 5 connexions simultanées
+  max: 5,
+  min: 0,
+  idleTimeoutMillis: 10000,
+
+  // Timeouts généreux pour le cold start Neon (~3-8s)
+  connectionTimeoutMillis: 10000,
+  query_timeout: 30000,
+});
+
 pool.on('connect', () => {
   console.log('PostgreSQL connection established');
 });
 
-// Error event handler (pool will attempt to reconnect automatically)
 pool.on('error', (err) => {
-  console.error('PostgreSQL error:', err);
+  console.error('PostgreSQL pool error:', err.message);
 });
 
-/**
- * Execute a SQL query with optional parameters.
- * Logs execution time and result row count.
- *
- * @param {string} text - SQL query string
- * @param {Array} [params] - Query parameters
- * @returns {Promise<object>} Query result object
- */
-const query = async (text, params) => {
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000; // ms
+
+const isRetryableError = (err) =>
+  err.message?.includes('timeout') ||
+  err.message?.includes('Connection terminated') ||
+  err.message?.includes('ECONNRESET') ||
+  err.code === 'ECONNRESET' ||
+  err.code === 'ETIMEDOUT' ||
+  err.code === '57P01'; // admin_shutdown (Neon suspend)
+
+// ── query avec retry automatique ──────────────────────────────────────────
+
+const query = async (text, params, attempt = 1) => {
   const start = Date.now();
   try {
-    const res = await pool.query(text, params);
+    const res      = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('Query executed:', { text, duration, rows: res.rowCount });
+    console.log('Query executed:', { text: text.substring(0, 80), duration, rows: res.rowCount });
     return res;
-  } catch (error) {
-    console.error('PostgreSQL query error:', error);
-    throw error;
+  } catch (err) {
+    if (isRetryableError(err) && attempt < MAX_RETRIES) {
+      console.log(`🔄 DB timeout — tentative ${attempt}/${MAX_RETRIES}, retry dans ${RETRY_DELAY}ms…`);
+      await new Promise(r => setTimeout(r, RETRY_DELAY));
+      return query(text, params, attempt + 1);
+    }
+    console.error('PostgreSQL query error:', err);
+    throw err;
   }
 };
 
-/**
- * Acquire a client from the pool for transaction handling.
- * The returned client has its own query method and a release method.
- *
- * @returns {Promise<object>} A client with query and release methods
- */
-const getClient = async () => {
-  const client = await pool.connect();
-  const query = client.query.bind(client);
-  const release = client.release.bind(client);
+// ── getClient avec retry ───────────────────────────────────────────────────
 
-  // Wrap the client's query method to preserve transaction context
-  client.query = (...args) => {
-    return query(...args);
-  };
+const getClient = async (attempt = 1) => {
+  try {
+    const client = await pool.connect();
 
-  client.release = () => {
-    return release();
-  };
+    const originalQuery   = client.query.bind(client);
+    const originalRelease = client.release.bind(client);
 
-  return client;
+    client.query   = (...args) => originalQuery(...args);
+    client.release = ()       => originalRelease();
+
+    return client;
+  } catch (err) {
+    if (isRetryableError(err) && attempt < MAX_RETRIES) {
+      console.log(`🔄 getClient timeout — tentative ${attempt}/${MAX_RETRIES}…`);
+      await new Promise(r => setTimeout(r, RETRY_DELAY));
+      return getClient(attempt + 1);
+    }
+    throw err;
+  }
 };
 
-module.exports = {
-  query,
-  getClient,
-  pool,
-};
+module.exports = { query, getClient, pool };
