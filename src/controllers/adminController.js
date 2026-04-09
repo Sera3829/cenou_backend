@@ -234,97 +234,147 @@ exports.getChartsData = async (req, res) => {
 exports.getRecentActivity = async (req, res) => {
   try {
     const { limit = 20 } = req.query;
-
+    const half  = Math.floor(parseInt(limit) / 2);
+    const qrtr  = Math.floor(parseInt(limit) / 4);
+    const total = parseInt(limit);
+ 
     const activity = await db.query(`
-      (SELECT 
-        'PAIEMENT_CONFIRME' as activity_type,
-        'Paiement confirmé' as title,
-        CONCAT('Paiement de ', p.montant, ' FCFA par ', u.prenom, ' ', u.nom) as description,
-        p.date_paiement as timestamp,
+      -- ── Paiements confirmés ──────────────────────────────────────────
+      (SELECT
+        'PAIEMENT_CONFIRME'                          AS activity_type,
+        'Paiement confirmé'                          AS title,
+        CONCAT('Paiement de ', p.montant, ' FCFA - Chambre ', l.numero_chambre) AS description,
+        p.date_paiement                              AS timestamp,
         JSON_BUILD_OBJECT(
-          'paiement_id', p.id,
-          'user_id', u.id,
-          'montant', p.montant,
-          'mode_paiement', p.mode_paiement
-        ) as metadata
-      FROM paiements p
-      JOIN attributions a ON p.attribution_id = a.id
-      JOIN utilisateurs u ON a.utilisateur_id = u.id
-      WHERE p.statut = 'CONFIRME'
-      ORDER BY p.date_paiement DESC
-      LIMIT ${parseInt(limit) / 2})
-      
+          'paiement_id',    p.id,
+          'user_id',        u.id,
+          'montant',        p.montant,
+          'mode_paiement',  p.mode_paiement,
+          'chambre',        l.numero_chambre,         -- ← chambre exposée
+          'numero_chambre', l.numero_chambre,
+          'centre_nom',     c.nom
+        ) AS metadata
+       FROM paiements p
+       JOIN attributions a ON p.attribution_id = a.id
+       JOIN utilisateurs u ON a.utilisateur_id  = u.id
+       JOIN logements    l ON a.logement_id      = l.id   -- ← JOIN ajouté
+       JOIN centres      c ON l.centre_id         = c.id  -- ← JOIN ajouté
+       WHERE p.statut = 'CONFIRME'
+       ORDER BY p.date_paiement DESC
+       LIMIT $1)
+ 
       UNION ALL
-      
-      (SELECT 
-        'SIGNALEMENT_CREATE' as activity_type,
-        'Nouveau signalement' as title,
-        CONCAT('Signalement ', s.type_probleme, ' - Chambre ', l.numero_chambre) as description,
-        s.created_at as timestamp,
+ 
+      -- ── Paiements initiés ────────────────────────────────────────────
+      (SELECT
+        'PAIEMENT_INITIE'                            AS activity_type,
+        'Paiement initié'                            AS title,
+        CONCAT('Paiement de ', p.montant, ' FCFA - Chambre ', l.numero_chambre) AS description,
+        p.created_at                                 AS timestamp,
+        JSON_BUILD_OBJECT(
+          'paiement_id',    p.id,
+          'user_id',        u.id,
+          'montant',        p.montant,
+          'mode_paiement',  p.mode_paiement,
+          'chambre',        l.numero_chambre,
+          'numero_chambre', l.numero_chambre,
+          'centre_nom',     c.nom
+        ) AS metadata
+       FROM paiements p
+       JOIN attributions a ON p.attribution_id = a.id
+       JOIN utilisateurs u ON a.utilisateur_id  = u.id
+       JOIN logements    l ON a.logement_id      = l.id
+       JOIN centres      c ON l.centre_id         = c.id
+       WHERE p.statut = 'EN_ATTENTE'
+       ORDER BY p.created_at DESC
+       LIMIT $1)
+ 
+      UNION ALL
+ 
+      -- ── Signalements créés ───────────────────────────────────────────
+      (SELECT
+        'SIGNALEMENT_CREATE'                         AS activity_type,
+        'Nouveau signalement'                        AS title,
+        CONCAT('Signalement ', s.type_probleme, ' - Chambre ', l.numero_chambre) AS description,
+        s.created_at                                 AS timestamp,
         JSON_BUILD_OBJECT(
           'signalement_id', s.id,
-          'user_id', u.id,
-          'type_probleme', s.type_probleme,
-          'statut', s.statut
-        ) as metadata
-      FROM signalements s
-      JOIN attributions a ON s.attribution_id = a.id
-      JOIN utilisateurs u ON a.utilisateur_id = u.id
-      JOIN logements l ON a.logement_id = l.id
-      ORDER BY s.created_at DESC
-      LIMIT ${parseInt(limit) / 2})
-      
+          'user_id',        u.id,
+          'type_probleme',  s.type_probleme,
+          'statut',         s.statut,
+          'chambre',        l.numero_chambre,        -- ← chambre exposée
+          'numero_chambre', l.numero_chambre,
+          'centre_nom',     c.nom
+        ) AS metadata
+       FROM signalements s
+       JOIN attributions a ON s.attribution_id = a.id
+       JOIN utilisateurs u ON a.utilisateur_id  = u.id
+       JOIN logements    l ON a.logement_id      = l.id   -- ← JOIN ajouté
+       JOIN centres      c ON l.centre_id         = c.id  -- ← JOIN ajouté
+       ORDER BY s.created_at DESC
+       LIMIT $1)
+ 
       UNION ALL
-      
-      (SELECT 
-        'SIGNALEMENT_UPDATE' as activity_type,
-        'Signalement mis à jour' as title,
-        CONCAT('Statut mis à jour: ', s.statut) as description,
-        s.updated_at as timestamp,
+ 
+      -- ── Signalements résolus ─────────────────────────────────────────
+      (SELECT
+        'SIGNALEMENT_RESOLU'                         AS activity_type,
+        'Signalement résolu'                         AS title,
+        CONCAT('Résolu : ', s.type_probleme, ' - Chambre ', l.numero_chambre) AS description,
+        s.date_resolution                            AS timestamp,
         JSON_BUILD_OBJECT(
           'signalement_id', s.id,
-          'ancien_statut', s.statut,
-          'date_resolution', s.date_resolution
-        ) as metadata
-      FROM signalements s
-      WHERE s.updated_at > s.created_at
-      ORDER BY s.updated_at DESC
-      LIMIT ${parseInt(limit) / 2})
-      
+          'type_probleme',  s.type_probleme,
+          'chambre',        l.numero_chambre,
+          'numero_chambre', l.numero_chambre,
+          'centre_nom',     c.nom
+        ) AS metadata
+       FROM signalements s
+       JOIN attributions a ON s.attribution_id = a.id
+       JOIN utilisateurs u ON a.utilisateur_id  = u.id
+       JOIN logements    l ON a.logement_id      = l.id
+       JOIN centres      c ON l.centre_id         = c.id
+       WHERE s.statut = 'RESOLU'
+         AND s.date_resolution IS NOT NULL
+       ORDER BY s.date_resolution DESC
+       LIMIT $2)
+ 
       UNION ALL
-      
-      (SELECT 
-        'USER_REGISTER' as activity_type,
-        'Nouvel utilisateur' as title,
-        CONCAT('Inscription: ', u.prenom, ' ', u.nom, ' (', u.role, ')') as description,
-        u.created_at as timestamp,
+ 
+      -- ── Nouveaux utilisateurs ────────────────────────────────────────
+      (SELECT
+        'USER_CREATE'                                AS activity_type,
+        'Nouvel utilisateur'                         AS title,
+        CONCAT('Inscription: ', u.prenom, ' ', u.nom, ' (', u.role, ')') AS description,
+        u.created_at                                 AS timestamp,
         JSON_BUILD_OBJECT(
-          'user_id', u.id,
-          'role', u.role,
-          'matricule', u.matricule
-        ) as metadata
-      FROM utilisateurs u
-      WHERE u.role IN ('ETUDIANT', 'GESTIONNAIRE')
-      ORDER BY u.created_at DESC
-      LIMIT ${parseInt(limit) / 4})
-      
-      ORDER BY timestamp DESC
-      LIMIT ${parseInt(limit)}
-    `);
-
+          'user_id',    u.id,
+          'role',       u.role,
+          'matricule',  u.matricule,
+          'utilisateur', CONCAT(u.prenom, ' ', u.nom)
+        ) AS metadata
+       FROM utilisateurs u
+       WHERE u.role IN ('ETUDIANT', 'GESTIONNAIRE')
+       ORDER BY u.created_at DESC
+       LIMIT $3)
+ 
+      ORDER BY timestamp DESC NULLS LAST
+      LIMIT $4
+    `, [half, qrtr, qrtr, total]);
+ 
     res.json({
       success: true,
       data: {
         activities: activity.rows,
-        total: activity.rows.length
-      }
+        total: activity.rows.length,
+      },
     });
-
+ 
   } catch (error) {
     console.error('❌ Erreur récupération activité récente:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur lors de la récupération de l\'activité récente'
+      error: "Erreur lors de la récupération de l'activité récente",
     });
   }
 };
