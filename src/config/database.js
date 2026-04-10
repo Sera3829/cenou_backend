@@ -12,48 +12,51 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
   max: 5,
   min: 0,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 15000, // 15s — Neon peut prendre jusqu'à 10s pour se réveiller
-  query_timeout: 30000,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 30000, // 30s — Neon cold start peut aller jusqu'à 20s
+  query_timeout: 60000,           // 60s pour les grosses requêtes
 });
 
 pool.on('connect', () => console.log('PostgreSQL connection established'));
 pool.on('error',   (err) => console.error('PostgreSQL pool error:', err.message));
 
-// ── Helpers retry ──────────────────────────────────────────────────────────
-
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 3000;
+const MAX_RETRIES = 5;           // 5 tentatives au lieu de 3
+const RETRY_DELAY = 5000;        // 5s entre chaque retry (Neon a le temps de se réveiller)
 
 const isRetryable = (err) =>
-  err.message?.includes('timeout') ||
+  err.message?.includes('timeout')               ||
   err.message?.includes('Connection terminated') ||
-  err.message?.includes('ECONNRESET') ||
+  err.message?.includes('ECONNRESET')            ||
+  err.message?.includes('connect ETIMEDOUT')     ||
+  err.message?.includes('the database system is starting up') ||
   err.code === 'ECONNRESET' ||
   err.code === 'ETIMEDOUT'  ||
-  err.code === '57P01';
-
-// ── query avec retry ───────────────────────────────────────────────────────
+  err.code === '57P01'      ||   // admin_shutdown
+  err.code === '08006'      ||   // connection_failure
+  err.code === '08001';          // sqlclient_unable_to_establish_sqlconnection
 
 const query = async (text, params, attempt = 1) => {
   const start = Date.now();
   try {
     const res      = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('Query executed:', { text: text.substring(0, 80), duration, rows: res.rowCount });
+    console.log('Query executed:', {
+      text: text.substring(0, 80),
+      duration,
+      rows: res.rowCount,
+    });
     return res;
   } catch (err) {
     if (isRetryable(err) && attempt < MAX_RETRIES) {
-      console.log(`🔄 DB timeout — tentative ${attempt}/${MAX_RETRIES}, retry dans ${RETRY_DELAY / 1000}s…`);
-      await new Promise(r => setTimeout(r, RETRY_DELAY));
+      const wait = RETRY_DELAY * attempt; // backoff progressif : 5s, 10s, 15s…
+      console.log(`🔄 DB indisponible — tentative ${attempt}/${MAX_RETRIES}, retry dans ${wait / 1000}s… (${err.message})`);
+      await new Promise(r => setTimeout(r, wait));
       return query(text, params, attempt + 1);
     }
     console.error('PostgreSQL query error:', err.message);
     throw err;
   }
 };
-
-// ── getClient avec retry ───────────────────────────────────────────────────
 
 const getClient = async (attempt = 1) => {
   try {
@@ -65,8 +68,9 @@ const getClient = async (attempt = 1) => {
     return client;
   } catch (err) {
     if (isRetryable(err) && attempt < MAX_RETRIES) {
-      console.log(`🔄 getClient timeout — tentative ${attempt}/${MAX_RETRIES}…`);
-      await new Promise(r => setTimeout(r, RETRY_DELAY));
+      const wait = RETRY_DELAY * attempt;
+      console.log(`🔄 getClient indisponible — tentative ${attempt}/${MAX_RETRIES}, retry dans ${wait / 1000}s…`);
+      await new Promise(r => setTimeout(r, wait));
       return getClient(attempt + 1);
     }
     throw err;
