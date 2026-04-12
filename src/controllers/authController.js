@@ -4,75 +4,97 @@ const { generateToken } = require('../utils/jwt');
 const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
 
 /**
- * Inscription d'un nouvel étudiant
+ * Inscription d'un nouvel étudiant — avec auto-attribution de chambre
  * POST /api/auth/register
  */
 const register = async (req, res) => {
   const client = await db.getClient();
-  
+
   try {
     const { matricule, nom, prenom, email, telephone, mot_de_passe } = req.body;
 
-    // Vérifier si le matricule existe déjà
+    // ── Unicité matricule ──────────────────────────────────────────────
     const existingMatricule = await client.query(
-      'SELECT id FROM utilisateurs WHERE matricule = $1',
-      [matricule]
+      'SELECT id FROM utilisateurs WHERE matricule = $1', [matricule]
     );
-
     if (existingMatricule.rows.length > 0) {
-      return res.status(409).json({
-        error: 'Ce matricule est déjà enregistré',
-      });
+      return res.status(409).json({ error: 'Ce matricule est déjà enregistré' });
     }
 
-    // Vérifier si l'email existe déjà
+    // ── Unicité email ──────────────────────────────────────────────────
     const existingEmail = await client.query(
-      'SELECT id FROM utilisateurs WHERE email = $1',
-      [email]
+      'SELECT id FROM utilisateurs WHERE email = $1', [email]
     );
-
     if (existingEmail.rows.length > 0) {
-      return res.status(409).json({
-        error: 'Cet email est déjà enregistré',
-      });
+      return res.status(409).json({ error: 'Cet email est déjà enregistré' });
     }
 
-    // Hacher le mot de passe
     const hashedPassword = await hashPassword(mot_de_passe);
 
-    // Insérer le nouvel utilisateur
+    await client.query('BEGIN');
+
+    // ── Créer l'utilisateur ────────────────────────────────────────────
     const result = await client.query(
       `INSERT INTO utilisateurs (matricule, nom, prenom, email, telephone, mot_de_passe, role, statut)
        VALUES ($1, $2, $3, $4, $5, $6, 'ETUDIANT', 'ACTIF')
        RETURNING id, matricule, nom, prenom, email, telephone, role, statut, created_at`,
       [matricule, nom, prenom, email, telephone || null, hashedPassword]
     );
-
     const newUser = result.rows[0];
 
-    // Générer le token JWT
+    // ── Auto-attribution : première chambre disponible ─────────────────
+    const chambre = await client.query(`
+      SELECT id FROM logements
+      WHERE statut = 'DISPONIBLE'
+      ORDER BY centre_id ASC, id ASC
+      LIMIT 1
+    `);
+
+    let attribution = null;
+    if (chambre.rows.length > 0) {
+      const logementId = chambre.rows[0].id;
+      const dateDebut  = new Date().toISOString().split('T')[0];
+
+      await client.query(`
+        INSERT INTO attributions (utilisateur_id, logement_id, date_debut, statut)
+        VALUES ($1, $2, $3, 'ACTIVE')
+      `, [newUser.id, logementId, dateDebut]);
+
+      await client.query(
+        `UPDATE logements SET statut = 'OCCUPE' WHERE id = $1`, [logementId]
+      );
+
+      // Récupérer les infos chambre pour la réponse
+      const infos = await client.query(`
+        SELECT l.numero_chambre, l.type_chambre, l.prix_mensuel::integer as loyer_mensuel,
+               c.nom as nom_centre, c.ville
+        FROM logements l
+        JOIN centres c ON l.centre_id = c.id
+        WHERE l.id = $1
+      `, [logementId]);
+
+      if (infos.rows.length > 0) attribution = infos.rows[0];
+      console.log(`✅ Chambre ${infos.rows[0]?.numero_chambre} attribuée à ${matricule}`);
+    } else {
+      console.warn(`⚠️ Aucune chambre disponible pour ${matricule}`);
+    }
+
+    await client.query('COMMIT');
+
+    // ── Token JWT ──────────────────────────────────────────────────────
     const token = generateToken({
-      userId: newUser.id,
-      matricule: newUser.matricule,
-      role: newUser.role,
+      userId: newUser.id, matricule: newUser.matricule, role: newUser.role,
     });
 
-    // Enregistrer la session dans Firebase (optionnel - ne bloque pas si Firebase indisponible)
+    // ── Firebase (non bloquant) ────────────────────────────────────────
     if (isFirebaseAvailable()) {
       try {
         await firebaseDb.collection('sessions').doc(newUser.id.toString()).set({
-          userId: newUser.id,
-          token: token,
+          userId: newUser.id, token,
           loginAt: new Date().toISOString(),
           expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         });
-        console.log('✅ Session Firebase créée');
-      } catch (firebaseError) {
-        console.error('⚠️ Erreur Firebase (non bloquante):', firebaseError.message);
-        // On continue quand même, Firebase n'est pas critique pour l'inscription
-      }
-    } else {
-      console.log('⚠️ Firebase indisponible - Session non enregistrée');
+      } catch (e) { console.error('⚠️ Firebase (non bloquant):', e.message); }
     }
 
     res.status(201).json({
@@ -85,15 +107,17 @@ const register = async (req, res) => {
         email: newUser.email,
         telephone: newUser.telephone,
         role: newUser.role,
+        numero_chambre: attribution?.numero_chambre ?? null,
+        nom_centre:     attribution?.nom_centre     ?? null,
+        loyer_mensuel:  attribution?.loyer_mensuel  ?? null,
       },
-      token: token,
+      token,
     });
+
   } catch (error) {
-    console.error('Erreur lors de l\'inscription:', error);
-    res.status(500).json({
-      error: 'Erreur lors de l\'inscription',
-      details: error.message,
-    });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Erreur inscription:', error);
+    res.status(500).json({ error: 'Erreur lors de l\'inscription', details: error.message });
   } finally {
     client.release();
   }

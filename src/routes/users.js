@@ -556,9 +556,10 @@ router.post(
       .trim()
       .matches(/^\+?[0-9]{8,20}$/)
       .withMessage('Numéro de téléphone invalide'),
-    body('role')
-      .isIn(['ETUDIANT', 'GESTIONNAIRE', 'ADMIN'])
-      .withMessage('Le rôle doit être: ETUDIANT, GESTIONNAIRE ou ADMIN'),
+    body('logement_id')
+    .if(body('role').equals('ETUDIANT'))
+    .notEmpty().withMessage('La chambre est obligatoire pour un étudiant')
+    .isInt().withMessage('L\'ID du logement doit être un nombre entier'),
     body('statut')
       .optional()
       .isIn(['ACTIF', 'INACTIF', 'SUSPENDU'])
@@ -613,6 +614,14 @@ router.post(
       } = req.body;
 
       const adminId = req.user.id;
+
+      // 🔒 Un GESTIONNAIRE ne peut pas créer ADMIN ni GESTIONNAIRE
+      if (req.user.role === 'GESTIONNAIRE' && ['ADMIN', 'GESTIONNAIRE'].includes(role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Accès refusé. Un gestionnaire ne peut créer que des étudiants.',
+        });
+      }
 
       // Vérifier si le matricule existe déjà
       const existingMatricule = await client.query(
@@ -980,6 +989,79 @@ router.put(
         success: false,
         error: 'Erreur lors de la mise à jour de l\'utilisateur'
       });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/**
+ * @route   DELETE /api/users/admin/:id
+ * @desc    Supprimer un utilisateur (ADMIN uniquement)
+ * @access  Private (Admin seulement)
+ */
+router.delete(
+  '/admin/:id',
+  authenticateToken,
+  authorizeRoles('ADMIN', 'GESTIONNAIRE'),
+  [param('id').isInt().withMessage('ID invalide')],
+  validate,
+  async (req, res) => {
+    const client = await db.getClient();
+    try {
+      const targetId = req.params.id;
+      const actor    = req.user;
+
+      // Récupérer l'utilisateur cible
+      const check = await client.query(
+        'SELECT id, role, matricule FROM utilisateurs WHERE id = $1', [targetId]
+      );
+      if (check.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'Utilisateur non trouvé' });
+      }
+
+      const target = check.rows[0];
+
+      // 🔒 GESTIONNAIRE ne peut pas supprimer ADMIN ou GESTIONNAIRE
+      if (actor.role === 'GESTIONNAIRE' &&
+          ['ADMIN', 'GESTIONNAIRE'].includes(target.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Accès refusé. Un gestionnaire ne peut pas supprimer un administrateur ou un autre gestionnaire.',
+        });
+      }
+
+      await client.query('BEGIN');
+
+      // Terminer les attributions actives et libérer les chambres
+      const attributions = await client.query(
+        `SELECT id, logement_id FROM attributions
+         WHERE utilisateur_id = $1 AND statut = 'ACTIVE'`, [targetId]
+      );
+      for (const a of attributions.rows) {
+        await client.query(
+          `UPDATE attributions SET statut = 'TERMINEE', date_fin = CURRENT_DATE,
+           updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [a.id]
+        );
+        await client.query(
+          `UPDATE logements SET statut = 'DISPONIBLE' WHERE id = $1`, [a.logement_id]
+        );
+      }
+
+      // Supprimer l'utilisateur
+      await client.query('DELETE FROM utilisateurs WHERE id = $1', [targetId]);
+
+      await client.query('COMMIT');
+
+      res.json({
+        success: true,
+        message: `Utilisateur ${target.matricule} supprimé avec succès`,
+      });
+
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('❌ Erreur suppression utilisateur:', error);
+      res.status(500).json({ success: false, error: 'Erreur lors de la suppression' });
     } finally {
       client.release();
     }
