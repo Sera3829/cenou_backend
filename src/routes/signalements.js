@@ -314,7 +314,8 @@ router.put(
     
     body('commentaire_resolution')
       .optional()
-      .isLength({ min: 10 }).withMessage('Le commentaire doit contenir au moins 10 caractères'),
+      .trim()
+      .isLength({ min: 1 }).withMessage('Le commentaire ne peut pas être vide'),
   ],
   validate,
   signalementController.updateSignalementStatut

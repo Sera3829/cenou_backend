@@ -76,9 +76,9 @@ if (photos.length > 0) {
         description,
         photoPaths,
         numeroSuivi,
-        user.id,              // ← ajouté
-        user.numero_chambre,  // ← ajouté
-        user.nom_centre       // ← ajouté
+        user.id,              
+        user.numero_chambre, 
+        user.nom_centre       
       ]
     );
 
@@ -532,11 +532,14 @@ const updateSignalementStatut = async (req, res) => {
     const updateParams = [statut];
     let paramIndex = 2;
 
-    if (statut === 'RESOLU' && commentaire_resolution) {
+    if ((statut === 'RESOLU' || statut === 'ANNULE') && commentaire_resolution) {
       updateFields.push(`commentaire_resolution = $${paramIndex}`);
-      updateFields.push(`date_resolution = CURRENT_TIMESTAMP`);
       updateParams.push(commentaire_resolution);
       paramIndex++;
+    }
+
+    if (statut === 'RESOLU') {
+      updateFields.push(`date_resolution = CURRENT_TIMESTAMP`);
     }
 
     updateParams.push(signalementId);
