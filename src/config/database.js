@@ -20,7 +20,7 @@ const pool = new Pool({
 pool.on('connect', () => console.log('PostgreSQL connection established'));
 pool.on('error',   (err) => console.error('PostgreSQL pool error:', err.message));
 
-const MAX_RETRIES = 5;           // 5 tentatives au lieu de 3
+const MAX_RETRIES = 4;           // 4 tentatives
 const RETRY_DELAY = 5000;        // 5s entre chaque retry (Neon a le temps de se réveiller)
 
 const isRetryable = (err) =>
@@ -36,8 +36,6 @@ const isRetryable = (err) =>
   err.code === '57P01'      ||
   err.code === '08006'      ||
   err.code === '08001';
-
-const MAX_RETRIES = 4;
 
 const query = async (text, params, attempt = 1) => {
   const start = Date.now();
