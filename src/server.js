@@ -147,16 +147,20 @@ async function _checkDbOnStartup() {
   }
 }
 
-// ── Keepalive DB toutes les 3 minutes ─────────────────────────────────────
-// Neon auto-suspend = 5 min → on ping toutes les 3 min pour rester sous le seuil.
-// Note : ce keepalive ne fonctionne QUE si Render est lui-même éveillé.
-// Pour maintenir Render éveillé → configurez UptimeRobot (gratuit) :
-//   https://uptimerobot.com → monitor HTTP → https://cenou-backend.onrender.com/api/health → 5 min
+// ── Keepalive DB toutes les 4min30 ─────────────────────────────────────
 
 function _startKeepalive(pool) {
-  const INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
+  // Neon auto-suspend = 5 min → on ping toutes les 4min30
+  // MAIS seulement entre 10h et 18h UTC pour économiser les CU-hrs la nuit
+  const INTERVAL_MS = 4.5 * 60 * 1000;
 
   setInterval(async () => {
+    const hour = new Date().getUTCHours();
+    if (hour < 10 || hour >= 18) {
+      console.log('🌙 Keepalive suspendu (nuit UTC) — Neon peut s\'endormir');
+      return; // laisse Neon dormir la nuit
+    }
+
     try {
       await Promise.race([
         pool.query('SELECT 1'),
@@ -166,13 +170,11 @@ function _startKeepalive(pool) {
       ]);
       console.log('💓 Keepalive DB OK');
     } catch (err) {
-      // Ne pas crasher — la prochaine requête API relancera la connexion via retry
-      console.log(`⚠️  Keepalive DB échoué (${err.message}) — Neon s'est rendormi`);
-      console.log('   La prochaine requête API le réveillera automatiquement.');
+      console.log(`⚠️  Keepalive échoué (${err.message})`);
     }
   }, INTERVAL_MS);
 
-  console.log(`💓 Keepalive DB démarré (toutes les ${INTERVAL_MS / 60000} min)`);
+  console.log('💓 Keepalive DB démarré (4min30, actif 10h-18h UTC)');
 }
 
 // ── Erreurs non gérées ────────────────────────────────────────────────────
