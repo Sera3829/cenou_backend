@@ -57,7 +57,11 @@ app.use(cors({
   origin: (origin, callback) => {
     // Requêtes sans Origin : apps mobiles, curl, health checks
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin)) {
+    // *.vercel.app : couvre le dashboard déployé sur Vercel (production et
+    // previews). Pour resserrer, définir ALLOWED_ORIGINS avec l'URL exacte.
+    if (allowedOrigins.includes(origin) ||
+        /^http:\/\/localhost(:\d+)?$/.test(origin) ||
+        /^https:\/\/[a-z0-9.-]+\.vercel\.app$/.test(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`Origine non autorisée par CORS: ${origin}`));
