@@ -34,7 +34,7 @@ const registerFCMToken = async (req, res) => {
     console.error('Erreur lors de l\'enregistrement du token FCM:', error);
     res.status(500).json({
       error: 'Erreur lors de l\'enregistrement du token FCM',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -241,7 +241,7 @@ const getNotifications = async (req, res) => {
     console.error('Erreur récupération notifications:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des notifications',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -290,7 +290,7 @@ const markNotificationAsRead = async (req, res) => {
     console.error('Erreur marquage notification:', error);
     res.status(500).json({
       error: 'Erreur lors du marquage de la notification',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -333,7 +333,7 @@ const markAllNotificationsAsRead = async (req, res) => {
     console.error('Erreur marquage notifications:', error);
     res.status(500).json({
       error: 'Erreur lors du marquage des notifications',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -379,7 +379,7 @@ const deleteNotification = async (req, res) => {
     console.error('Erreur suppression notification:', error);
     res.status(500).json({
       error: 'Erreur lors de la suppression de la notification',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -442,7 +442,7 @@ const sendNotification = async (req, res) => {
     console.error('Erreur envoi notification:', error);
     res.status(500).json({
       error: 'Erreur lors de l\'envoi de la notification',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -525,7 +525,7 @@ const sendBulkNotifications = async (req, res) => {
     console.error('Erreur envoi bulk:', error);
     res.status(500).json({
       error: 'Erreur lors de l\'envoi groupé',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -559,7 +559,7 @@ const sendNotificationByCentre = async (req, res) => {
     console.error('Erreur envoi par centre:', error);
     res.status(500).json({
       error: 'Erreur lors de l\'envoi par centre',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };

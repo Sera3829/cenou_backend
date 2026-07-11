@@ -243,7 +243,7 @@ if (statut === 'PUBLIE' && userIds.length > 0) {
     console.error('❌ [ANNONCES] Erreur création annonce:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la création de l\'annonce',
-      details: error.message 
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -295,7 +295,7 @@ const getAnnoncesAdmin = async (req, res) => {
     console.error('❌ [ANNONCES] Erreur récupération annonces:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la récupération des annonces',
-      details: error.message 
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -358,7 +358,7 @@ const updateAnnonceStatut = async (req, res) => {
     console.error('❌ [ANNONCES] Erreur mise à jour statut:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la mise à jour du statut',
-      details: error.message 
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -385,7 +385,7 @@ const deleteAnnonce = async (req, res) => {
     console.error('❌ [ANNONCES] Erreur suppression annonce:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la suppression de l\'annonce',
-      details: error.message 
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -455,7 +455,7 @@ const getAnnoncesEtudiant = async (req, res) => {
     console.error('❌ [ANNONCES] Erreur récupération annonces étudiant:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la récupération des annonces',
-      details: error.message 
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -517,7 +517,7 @@ const getAnnonceById = async (req, res) => {
     console.error('❌ [ANNONCES] Erreur récupération annonce:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la récupération de l\'annonce',
-      details: error.message 
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };

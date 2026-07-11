@@ -37,7 +37,7 @@ router.get('/', authenticateToken, async (req, res) => {
     console.error('❌ [CENTRES] Erreur:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des centres',
-      details: error.message
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 });
@@ -80,7 +80,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     console.error('❌ [CENTRES] Erreur:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du centre',
-      details: error.message
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 });
@@ -133,7 +133,7 @@ router.get('/:id/etudiants',
       console.error('❌ [CENTRES] Erreur:', error);
       res.status(500).json({
         error: 'Erreur lors de la récupération des étudiants',
-        details: error.message
+        details: process.env.NODE_ENV !== 'production' ? error.message : undefined
       });
     }
   }

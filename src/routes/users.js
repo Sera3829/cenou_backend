@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
 const db = require('../config/database');
-const { authenticateToken, authorizeRoles } = require('../middlewares/authMiddleware');
+const { authenticateToken, authorizeRoles, getCentreScope } = require('../middlewares/authMiddleware');
 const {
   updateProfileValidation,
   changePasswordValidation,
@@ -112,11 +112,15 @@ router.get(
       const {
         role,
         statut,
-        centre_id,
         search,
         page = 1,
         limit = 20
       } = req.query;
+
+      // 🔒 Cloisonnement : un gestionnaire ne voit que les utilisateurs
+      // rattachés à son centre (via leur attribution active)
+      const centreScope = getCentreScope(req);
+      const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
 
       const offset = (page - 1) * limit;
 
@@ -326,7 +330,7 @@ router.get(
       res.status(500).json({
         success: false,
         error: 'Erreur lors de la récupération des utilisateurs',
-        details: error.message
+        details: process.env.NODE_ENV !== 'production' ? error.message : undefined
       });
     }
   }
@@ -342,9 +346,15 @@ router.get('/admin/etudiants',
   authorizeRoles('ADMIN', 'GESTIONNAIRE'),
   async (req, res) => {
     try {
-      console.log('📥 [USERS] Récupération de tous les étudiants');
+      // 🔒 Cloisonnement : un gestionnaire ne voit que les étudiants de son centre
+      const centreScope = getCentreScope(req);
+      const params = [];
+      let centreClause = '';
+      if (centreScope !== null) {
+        centreClause = 'AND l.centre_id = $1';
+        params.push(centreScope);
+      }
 
-      // ✅ CORRECTION : Utiliser db.query au lieu de pool.query
       const result = await db.query(`
         SELECT DISTINCT ON (u.id)
           u.id,
@@ -361,8 +371,9 @@ router.get('/admin/etudiants',
         LEFT JOIN centres c ON l.centre_id = c.id
         WHERE u.role = 'ETUDIANT'
           AND u.statut = 'ACTIF'
+          ${centreClause}
         ORDER BY u.id, u.nom ASC, u.prenom ASC
-      `);
+      `, params);
 
       console.log(`✅ [USERS] ${result.rows.length} étudiants trouvés`);
 
@@ -376,7 +387,7 @@ router.get('/admin/etudiants',
       console.error('❌ [USERS] Erreur récupération étudiants:', error);
       res.status(500).json({
         error: 'Erreur lors de la récupération des étudiants',
-        details: error.message
+        details: process.env.NODE_ENV !== 'production' ? error.message : undefined
       });
     }
   }
@@ -422,10 +433,28 @@ router.get(
     try {
       const userId = req.params.id;
 
-      // Détails utilisateur
+      // 🔒 Cloisonnement : un gestionnaire ne peut consulter que les
+      // étudiants rattachés à son centre
+      const centreScope = getCentreScope(req);
+      const userParams = [userId];
+      let centreClause = '';
+      if (centreScope !== null) {
+        centreClause = `AND u.role = 'ETUDIANT' AND EXISTS (
+          SELECT 1 FROM attributions a2
+          JOIN logements l2 ON a2.logement_id = l2.id
+          WHERE a2.utilisateur_id = u.id
+            AND a2.statut = 'ACTIVE'
+            AND l2.centre_id = $2
+        )`;
+        userParams.push(centreScope);
+      }
+
+      // Détails utilisateur — colonnes explicites : ne JAMAIS renvoyer
+      // u.* (le hash du mot de passe partait au client)
       const userResult = await db.query(`
-        SELECT 
-          u.*,
+        SELECT
+          u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone,
+          u.role, u.statut, u.centre_id, u.created_at, u.updated_at,
           c.nom as centre_nom,
           l.numero_chambre,
           a.date_debut,
@@ -435,8 +464,8 @@ router.get(
         LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
         LEFT JOIN logements l ON a.logement_id = l.id
         LEFT JOIN centres c ON l.centre_id = c.id
-        WHERE u.id = $1
-      `, [userId]);
+        WHERE u.id = $1 ${centreClause}
+      `, userParams);
 
       if (userResult.rows.length === 0) {
         return res.status(404).json({
@@ -623,6 +652,23 @@ router.post(
         });
       }
 
+      // 🔒 Cloisonnement : un gestionnaire ne peut attribuer que des
+      // logements de son propre centre
+      const centreScope = getCentreScope(req);
+      if (centreScope !== null && logement_id) {
+        const logementCheck = await client.query(
+          'SELECT centre_id FROM logements WHERE id = $1',
+          [logement_id]
+        );
+        if (logementCheck.rows.length === 0 ||
+            logementCheck.rows[0].centre_id !== centreScope) {
+          return res.status(403).json({
+            success: false,
+            error: 'Accès refusé. Ce logement n\'appartient pas à votre centre.',
+          });
+        }
+      }
+
       // Vérifier si le matricule existe déjà
       const existingMatricule = await client.query(
         'SELECT id FROM utilisateurs WHERE matricule = $1',
@@ -705,7 +751,7 @@ router.post(
       });
 
     } catch (error) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       console.error('❌ Erreur création utilisateur:', error);
       res.status(500).json({
         success: false,
@@ -795,6 +841,43 @@ router.put(
       }
 
       const user = existingUser.rows[0];
+
+      // 🔒 Cloisonnement : un gestionnaire ne peut modifier que les
+      // étudiants de son centre, et n'attribuer que des logements de son centre
+      const centreScope = getCentreScope(req);
+      if (centreScope !== null) {
+        if (user.role !== 'ETUDIANT') {
+          return res.status(403).json({
+            success: false,
+            error: 'Accès refusé. Un gestionnaire ne peut modifier que des étudiants.',
+          });
+        }
+        const centreCheck = await client.query(
+          `SELECT 1 FROM attributions a
+           JOIN logements l ON a.logement_id = l.id
+           WHERE a.utilisateur_id = $1 AND a.statut = 'ACTIVE' AND l.centre_id = $2`,
+          [userId, centreScope]
+        );
+        if (centreCheck.rows.length === 0) {
+          return res.status(403).json({
+            success: false,
+            error: 'Accès refusé. Cet étudiant n\'appartient pas à votre centre.',
+          });
+        }
+        if (updates.logement_id) {
+          const logementCheck = await client.query(
+            'SELECT centre_id FROM logements WHERE id = $1',
+            [updates.logement_id]
+          );
+          if (logementCheck.rows.length === 0 ||
+              logementCheck.rows[0].centre_id !== centreScope) {
+            return res.status(403).json({
+              success: false,
+              error: 'Accès refusé. Ce logement n\'appartient pas à votre centre.',
+            });
+          }
+        }
+      }
 
       // Vérifier l'email s'il est fourni
       if (updates.email && updates.email !== user.email) {
@@ -960,10 +1043,11 @@ router.put(
 
       await client.query('COMMIT');
 
-      // Récupérer l'utilisateur mis à jour
+      // Récupérer l'utilisateur mis à jour (colonnes explicites, jamais u.*)
       const updatedUser = await client.query(`
-        SELECT 
-          u.*,
+        SELECT
+          u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone,
+          u.role, u.statut, u.centre_id, u.created_at, u.updated_at,
           c.nom as centre_nom,
           l.numero_chambre,
           a.date_debut,
@@ -983,7 +1067,7 @@ router.put(
       });
 
     } catch (error) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       console.error('❌ Erreur mise à jour utilisateur:', error);
       res.status(500).json({
         success: false,
@@ -1031,6 +1115,24 @@ router.delete(
         });
       }
 
+      // 🔒 Cloisonnement : un gestionnaire ne peut désactiver que les
+      // étudiants de son centre
+      const centreScope = getCentreScope(req);
+      if (centreScope !== null) {
+        const centreCheck = await client.query(
+          `SELECT 1 FROM attributions a
+           JOIN logements l ON a.logement_id = l.id
+           WHERE a.utilisateur_id = $1 AND a.statut = 'ACTIVE' AND l.centre_id = $2`,
+          [targetId, centreScope]
+        );
+        if (centreCheck.rows.length === 0) {
+          return res.status(403).json({
+            success: false,
+            error: 'Accès refusé. Cet étudiant n\'appartient pas à votre centre.',
+          });
+        }
+      }
+
       await client.query('BEGIN');
 
       // Terminer les attributions actives et libérer les chambres
@@ -1048,14 +1150,21 @@ router.delete(
         );
       }
 
-      // Supprimer l'utilisateur
-      await client.query('DELETE FROM utilisateurs WHERE id = $1', [targetId]);
+      // ⚠️ SOFT DELETE — on ne supprime plus physiquement l'utilisateur :
+      // le DELETE en cascade détruisait tout son historique de paiements
+      // (données financières). Le compte est désactivé, l'historique conservé.
+      await client.query(
+        `UPDATE utilisateurs
+         SET statut = 'INACTIF', updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [targetId]
+      );
 
       await client.query('COMMIT');
 
       res.json({
         success: true,
-        message: `Utilisateur ${target.matricule} supprimé avec succès`,
+        message: `Utilisateur ${target.matricule} désactivé (historique conservé)`,
       });
 
     } catch (error) {
@@ -1071,12 +1180,16 @@ router.delete(
 
 // Fonctions helpers
 function generateDefaultPassword() {
+  // crypto.randomBytes : Math.random() est prédictible, inutilisable pour
+  // générer des mots de passe.
+  const crypto = require('crypto');
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = crypto.randomBytes(10);
   let password = '';
-  for (let i = 0; i < 8; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  for (let i = 0; i < bytes.length; i++) {
+    password += chars[bytes[i] % chars.length];
   }
-  return password + 'A1!'; // Ajouter des caractères spéciaux
+  return password + 'A1!'; // garantit majuscule + chiffre + spécial
 }
 
 module.exports = router;

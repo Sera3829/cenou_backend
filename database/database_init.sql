@@ -129,8 +129,10 @@ CREATE TRIGGER update_annonces_updated_at BEFORE UPDATE ON annonces
 INSERT INTO centres (nom, ville, adresse, capacite_totale) 
 VALUES ('CENOU Ouagadougou', 'Ouagadougou', 'Avenue de l''Indépendance', 200);
 
--- Utilisateur admin de test (mot de passe: admin123)
-INSERT INTO utilisateurs (matricule, nom, prenom, email, telephone, mot_de_passe, role) 
-VALUES ('N000020261', 'Seraphin', 'Kabore', 'sera@gmail.com', '+22670000000', '$2a$10$xQH9z5L7qWJ5F0rY3nQ4zOqK4kHXvF.7JYC.1EqN0bWZH4V7ZH4V6', 'ETUDIANT');
+-- ⚠️ SÉCURITÉ : ne jamais commiter un utilisateur avec un mot de passe connu
+-- (l'ancien seed contenait un hash de « admin123 » visible publiquement).
+-- Pour créer le premier compte : POST /api/auth/register, puis promouvoir :
+--   UPDATE utilisateurs SET role = 'ADMIN' WHERE matricule = '<VOTRE_MATRICULE>';
+-- Penser aussi à exécuter database/migration_002_securite_centres.sql
 
 COMMIT;

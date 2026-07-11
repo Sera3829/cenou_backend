@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
+const { getCentreScope } = require('../middlewares/authMiddleware');
 const { deleteFiles } = require('../utils/imageProcessor');
 const path = require('path');
 const crypto = require('crypto');
@@ -128,7 +129,7 @@ if (photos.length > 0) {
   },
 });}
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Erreur lors de la création du signalement:', error);
 
     // Supprimer les photos uploadées en cas d'erreur
@@ -138,7 +139,7 @@ if (photos.length > 0) {
 
     res.status(500).json({
       error: 'Erreur lors de la création du signalement',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   } finally {
     client.release();
@@ -178,7 +179,7 @@ const getSignalements = async (req, res) => {
     console.error('Erreur lors de la récupération des signalements:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des signalements',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -223,7 +224,7 @@ console.log('📸 Photos retournées:', result.rows[0].photos);
     console.error('Erreur lors de la récupération du signalement:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du signalement',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -279,7 +280,7 @@ const getSignalementPhoto = async (req, res) => {
     console.error('Erreur lors de la récupération de la photo:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération de la photo',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -290,16 +291,20 @@ const getSignalementPhoto = async (req, res) => {
  */
 const getAllSignalements = async (req, res) => {
   try {
-    const { 
+    const {
       type,           // Filtre par type de problème
       statut,         // Filtre par statut
-      centre_id,      // Filtre par centre
       date_from,      // Filtre date de début
       date_to,        // Filtre date de fin
       search,         // Recherche texte
       page = 1,       // Pagination
       limit = 20      // Limite par page
     } = req.query;
+
+    // 🔒 Cloisonnement : un gestionnaire ne voit que les signalements
+    // de son centre (un admin peut filtrer via ?centre_id=…)
+    const centreScope = getCentreScope(req);
+    const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
 
     console.log('🔍 PARAMÈTRES REÇUS (backend signalements):', {
       type, statut, centre_id, date_from, date_to, search, page, limit
@@ -358,8 +363,10 @@ const getAllSignalements = async (req, res) => {
 
     // ============ FILTRE CENTRE ============
     if (centre_id) {
-      query += ` AND s.nom_centre ILIKE $${paramIndex}`;
-      params.push(`%${centre_id}%`); // Recherche par nom
+      // Filtre par ID de centre via la jointure (l'ancienne version utilisait
+      // une colonne s.nom_centre inexistante → erreur SQL)
+      query += ` AND c.id = $${paramIndex}`;
+      params.push(centre_id);
       paramIndex++;
       console.log(`✅ Filtre centre appliqué: ${centre_id}`);
     }
@@ -391,7 +398,7 @@ const getAllSignalements = async (req, res) => {
         u.matricule ILIKE $${paramIndex} OR
         u.telephone ILIKE $${paramIndex} OR
         u.email ILIKE $${paramIndex} OR
-        s.nom_centre ILIKE $${paramIndex}
+        c.nom ILIKE $${paramIndex}
       )`;
       params.push(searchTerm);
       paramIndex++;
@@ -506,15 +513,32 @@ const updateSignalementStatut = async (req, res) => {
     const signalementId = req.params.id;
     const { statut, commentaire_resolution } = req.body;
 
-    // Vérifier que le signalement existe
+    // 🔒 Cloisonnement : un gestionnaire ne peut modifier que les
+    // signalements de son centre
+    const centreScope = getCentreScope(req);
+    const checkParams = [signalementId];
+    let centreClause = '';
+    if (centreScope !== null) {
+      centreClause = 'AND l.centre_id = $2';
+      checkParams.push(centreScope);
+    }
+
+    // Vérifier que le signalement existe (les infos étudiant/centre passent
+    // par l'attribution — l'ancienne requête utilisait des colonnes
+    // s.user_id / s.nom_centre inexistantes)
     const checkResult = await client.query(
-      `SELECT s.id, s.statut, s.user_id, s.numero_suivi,
+      `SELECT s.id, s.statut, s.numero_suivi, s.photos,
+              a.utilisateur_id AS user_id,
               u.nom, u.prenom, u.matricule, u.telephone, u.email,
-              s.numero_chambre, s.nom_centre, s.photos
+              l.numero_chambre,
+              c.nom AS nom_centre
        FROM signalements s
-       LEFT JOIN utilisateurs u ON s.user_id = u.id
-       WHERE s.id = $1`,
-      [signalementId]
+       LEFT JOIN attributions a ON s.attribution_id = a.id
+       LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+       LEFT JOIN logements l ON a.logement_id = l.id
+       LEFT JOIN centres c ON l.centre_id = c.id
+       WHERE s.id = $1 ${centreClause}`,
+      checkParams
     );
 
     if (checkResult.rows.length === 0) {
@@ -545,13 +569,12 @@ const updateSignalementStatut = async (req, res) => {
     updateParams.push(signalementId);
 
     const result = await client.query(
-      `UPDATE signalements 
+      `UPDATE signalements
        SET ${updateFields.join(', ')}
        WHERE id = $${paramIndex}
-       RETURNING 
-         id, numero_suivi, type_probleme, description, photos, statut, 
-         date_resolution, commentaire_resolution, created_at, updated_at,
-         numero_chambre, nom_centre, user_id`,
+       RETURNING
+         id, numero_suivi, type_probleme, description, photos, statut,
+         date_resolution, commentaire_resolution, created_at, updated_at`,
       updateParams
     );
 
@@ -570,6 +593,9 @@ const updateSignalementStatut = async (req, res) => {
     // CORRECTION ICI : Inclure nom et prenom explicitement
     const updatedSignalement = {
       ...result.rows[0],
+      numero_chambre: signalement.numero_chambre,
+      nom_centre: signalement.nom_centre,
+      user_id: signalement.user_id,
       // Informations étudiant - RÉCUPÉRER DE LA BASE
       nom: userInfo.nom || signalement.nom, // <-- AJOUTER ICI
       prenom: userInfo.prenom || signalement.prenom, // <-- AJOUTER ICI
@@ -625,11 +651,11 @@ const updateSignalementStatut = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Erreur lors de la mise à jour du statut:', error);
     res.status(500).json({
       error: 'Erreur lors de la mise à jour du statut',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   } finally {
     client.release();
@@ -644,23 +670,37 @@ const getSignalementAdminById = async (req, res) => {
   try {
     const signalementId = req.params.id;
 
+    // 🔒 Cloisonnement : un gestionnaire ne peut consulter que les
+    // signalements de son centre
+    const centreScope = getCentreScope(req);
+    const params = [signalementId];
+    let centreClause = '';
+    if (centreScope !== null) {
+      centreClause = 'AND l.centre_id = $2';
+      params.push(centreScope);
+    }
+
     const result = await db.query(
-      `SELECT 
-         s.id, s.numero_suivi, s.type_probleme, s.description, 
+      `SELECT
+         s.id, s.numero_suivi, s.type_probleme, s.description,
          s.photos, s.statut, s.date_resolution, s.commentaire_resolution,
          s.created_at, s.updated_at,
-         s.numero_chambre, s.nom_centre, s.user_id,
-         
+         a.utilisateur_id AS user_id,
+
          -- Informations étudiant
          u.nom, u.prenom, u.matricule, u.telephone, u.email,
-         
-         -- Informations centre
+
+         -- Informations logement / centre
+         l.numero_chambre,
+         c.nom AS nom_centre,
          c.ville
        FROM signalements s
-       LEFT JOIN utilisateurs u ON s.user_id = u.id
-       LEFT JOIN centres c ON s.nom_centre = c.nom
-       WHERE s.id = $1`,
-      [signalementId]
+       LEFT JOIN attributions a ON s.attribution_id = a.id
+       LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+       LEFT JOIN logements l ON a.logement_id = l.id
+       LEFT JOIN centres c ON l.centre_id = c.id
+       WHERE s.id = $1 ${centreClause}`,
+      params
     );
 
     if (result.rows.length === 0) {
@@ -710,7 +750,7 @@ const getSignalementAdminById = async (req, res) => {
     console.error('Erreur lors de la récupération du signalement:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du signalement',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };

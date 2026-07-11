@@ -41,7 +41,7 @@ router.get('/', authenticateToken, async (req, res) => {
     console.error('❌ [LOGEMENTS] Erreur:', error);
     res.status(500).json({
       error:   'Erreur lors de la récupération des logements',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 });
@@ -72,7 +72,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     console.error('❌ [LOGEMENTS] Erreur:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du logement',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 });

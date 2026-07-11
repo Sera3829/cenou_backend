@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const signalementController = require('../controllers/signalementController');
-const { authenticateToken, authorizeRoles } = require('../middlewares/authMiddleware');
+const { authenticateToken, authorizeRoles, getCentreScope } = require('../middlewares/authMiddleware');
 const { uploadSignalementPhotos } = require('../middlewares/uploadMiddleware');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../config/database');
+const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
 
 // Middleware de validation pour créer un signalement
 const creerSignalementValidation = [
@@ -82,7 +83,6 @@ router.get(
   signalementController.getSignalementPhoto
 );
 
-module.exports = router;
 // ==================== ROUTES ADMIN SIGNALEMENTS ====================
 
 /**
@@ -102,11 +102,16 @@ router.get(
       const {
         statut,
         type,
-        centre_id,
         date_from,
         date_to,
         search
       } = req.query;
+
+      // 🔒 Cloisonnement : un gestionnaire ne voit que son centre.
+      // (L'ancien filtre utilisait une colonne "nom_centre" inexistante
+      // dans la table signalements → erreur SQL dès qu'il était utilisé.)
+      const centreScope = getCentreScope(req);
+      const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
 
       // ============ CONSTRUCTION DE LA CLAUSE WHERE ============
       let whereClause = 'WHERE 1=1';
@@ -114,31 +119,35 @@ router.get(
       let paramIndex = 1;
 
       if (type && type !== 'TOUS') {
-        whereClause += ` AND type_probleme = $${paramIndex}`;
+        whereClause += ` AND s.type_probleme = $${paramIndex}`;
         params.push(type);
         paramIndex++;
       }
 
       if (statut && statut !== 'TOUS') {
-        whereClause += ` AND statut = $${paramIndex}`;
+        whereClause += ` AND s.statut = $${paramIndex}`;
         params.push(statut);
         paramIndex++;
       }
 
       if (centre_id) {
-        whereClause += ` AND nom_centre ILIKE $${paramIndex}`;
-        params.push(`%${centre_id}%`);
+        whereClause += ` AND EXISTS (
+          SELECT 1 FROM attributions a
+          JOIN logements l ON a.logement_id = l.id
+          WHERE a.id = s.attribution_id AND l.centre_id = $${paramIndex}
+        )`;
+        params.push(centre_id);
         paramIndex++;
       }
 
       if (date_from) {
-        whereClause += ` AND DATE(created_at) >= $${paramIndex}`;
+        whereClause += ` AND DATE(s.created_at) >= $${paramIndex}`;
         params.push(date_from);
         paramIndex++;
       }
 
       if (date_to) {
-        whereClause += ` AND DATE(created_at) <= $${paramIndex}`;
+        whereClause += ` AND DATE(s.created_at) <= $${paramIndex}`;
         params.push(date_to);
         paramIndex++;
       }
@@ -146,8 +155,8 @@ router.get(
       if (search && search.trim() !== '') {
         const searchTerm = `%${search}%`;
         whereClause += ` AND (
-          description ILIKE $${paramIndex} OR
-          numero_suivi ILIKE $${paramIndex}
+          s.description ILIKE $${paramIndex} OR
+          s.numero_suivi ILIKE $${paramIndex}
         )`;
         params.push(searchTerm);
         paramIndex++;
@@ -160,33 +169,33 @@ router.get(
       const query = `
         SELECT
           COUNT(*) as total,
-          
+
           -- Par statut
-          COUNT(CASE WHEN statut = 'EN_ATTENTE' THEN 1 END) as en_attente,
-          COUNT(CASE WHEN statut = 'EN_COURS' THEN 1 END) as en_cours,
-          COUNT(CASE WHEN statut = 'RESOLU' THEN 1 END) as resolus,
-          COUNT(CASE WHEN statut = 'ANNULE' THEN 1 END) as annules,
-          
+          COUNT(CASE WHEN s.statut = 'EN_ATTENTE' THEN 1 END) as en_attente,
+          COUNT(CASE WHEN s.statut = 'EN_COURS' THEN 1 END) as en_cours,
+          COUNT(CASE WHEN s.statut = 'RESOLU' THEN 1 END) as resolus,
+          COUNT(CASE WHEN s.statut = 'ANNULE' THEN 1 END) as annules,
+
           -- Par type
-          COUNT(CASE WHEN type_probleme = 'PLOMBERIE' THEN 1 END) as plomberie,
-          COUNT(CASE WHEN type_probleme = 'ELECTRICITE' THEN 1 END) as electricite,
-          COUNT(CASE WHEN type_probleme = 'MOBILIER' THEN 1 END) as mobilier,
-          COUNT(CASE WHEN type_probleme = 'TOITURE' THEN 1 END) as toiture,
-          COUNT(CASE WHEN type_probleme = 'SERRURE' THEN 1 END) as serrure,
-          COUNT(CASE WHEN type_probleme = 'AUTRE' THEN 1 END) as autre,
-          
+          COUNT(CASE WHEN s.type_probleme = 'PLOMBERIE' THEN 1 END) as plomberie,
+          COUNT(CASE WHEN s.type_probleme = 'ELECTRICITE' THEN 1 END) as electricite,
+          COUNT(CASE WHEN s.type_probleme = 'MOBILIER' THEN 1 END) as mobilier,
+          COUNT(CASE WHEN s.type_probleme = 'TOITURE' THEN 1 END) as toiture,
+          COUNT(CASE WHEN s.type_probleme = 'SERRURE' THEN 1 END) as serrure,
+          COUNT(CASE WHEN s.type_probleme = 'AUTRE' THEN 1 END) as autre,
+
           -- TAUX DE RÉSOLUTION (hors annulés)
-          CASE 
-            WHEN COUNT(*) - COUNT(CASE WHEN statut = 'ANNULE' THEN 1 END) > 0
+          CASE
+            WHEN COUNT(*) - COUNT(CASE WHEN s.statut = 'ANNULE' THEN 1 END) > 0
             THEN ROUND(
-              (COUNT(CASE WHEN statut = 'RESOLU' THEN 1 END) * 100.0) /
-              (COUNT(*) - COUNT(CASE WHEN statut = 'ANNULE' THEN 1 END)),
+              (COUNT(CASE WHEN s.statut = 'RESOLU' THEN 1 END) * 100.0) /
+              (COUNT(*) - COUNT(CASE WHEN s.statut = 'ANNULE' THEN 1 END)),
               1
             )
-            ELSE 0 
+            ELSE 0
           END as taux_resolution
-          
-        FROM signalements
+
+        FROM signalements s
         ${whereClause}
       `;
 
@@ -450,7 +459,7 @@ router.post(
       });
 
     } catch (error) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       console.error('❌ Erreur affectation équipe:', error);
       res.status(500).json({
         success: false,
@@ -462,3 +471,5 @@ router.post(
   }
 );
 
+
+module.exports = router;

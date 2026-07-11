@@ -1,7 +1,18 @@
 const express = require('express');
 const cors    = require('cors');
+const helmet  = require('helmet');
+const rateLimit = require('express-rate-limit');
 const path    = require('path');
 require('dotenv').config();
+
+// ── Vérifications de configuration au démarrage ──────────────────────────
+// Mieux vaut refuser de démarrer qu'émettre des tokens non signés ou
+// échouer en 500 obscurs sur chaque login.
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('❌ JWT_SECRET manquant ou trop court (min. 32 caractères).');
+  console.error('   Générez-en un : node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"');
+  process.exit(1);
+}
 
 const authRoutes         = require('./routes/auth');
 const userRoutes         = require('./routes/users');
@@ -20,8 +31,37 @@ const errorHandler = require('./middlewares/errorHandler');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// Render/Heroku : derrière un proxy, nécessaire pour que le rate limiter
+// identifie la vraie IP cliente via X-Forwarded-For.
+app.set('trust proxy', 1);
+
+app.use(helmet());
+
+// ── CORS ──────────────────────────────────────────────────────────────────
+// Les apps mobiles n'envoient pas d'en-tête Origin (non concernées par CORS).
+// Seul le dashboard web est concerné : on n'autorise que les origines connues.
+// Ajouter d'autres origines via ALLOWED_ORIGINS (séparées par des virgules).
+const defaultOrigins = [
+  'https://cenou-frontend.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'http://localhost:8080',
+];
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean)
+  .concat(defaultOrigins);
+
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => {
+    // Requêtes sans Origin : apps mobiles, curl, health checks
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origine non autorisée par CORS: ${origin}`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
@@ -29,17 +69,35 @@ app.use(cors({
     'Origin', 'X-Requested-With', 'x-platform',
   ],
 }));
-app.options('*', cors());
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+
+// ── Rate limiting ─────────────────────────────────────────────────────────
+// Protège login/register du brute force. Limite large sur le reste de l'API.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de tentatives. Réessayez dans 15 minutes.' },
+});
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de requêtes. Réessayez dans une minute.' },
+});
+
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api', apiLimiter);
 
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
-    const auth = req.headers['authorization'];
-    console.log(`📤 Authorization Header: ${auth ? auth.substring(0, 30) + '...' : 'MANQUANT'}`);
     next();
   });
 }
@@ -83,13 +141,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('Serveur CENOU Backend démarré');
   console.log(`Port: ${PORT}`);
   console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Réseau: https://cenou-backend.onrender.com`);
-  console.log('CORS activé pour toutes les origines (*)');
-  console.log('Routes disponibles:');
-  console.log('   POST /api/auth/login');
-  console.log('   POST /api/auth/register');
-  console.log('   GET  /api/health');
+  console.log(`Origines CORS autorisées: ${allowedOrigins.join(', ')}`);
 
   _checkDbOnStartup();
 });

@@ -34,7 +34,7 @@ const getPaiements = async (req, res) => {
     console.error('Erreur lors de la récupération des paiements:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des paiements',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -77,7 +77,7 @@ const getPaiementById = async (req, res) => {
     console.error('Erreur lors de la récupération du paiement:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du paiement',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -117,7 +117,7 @@ const getPendingPaiements = async (req, res) => {
     console.error('Erreur lors de la récupération des paiements en attente:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des paiements en attente',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -170,8 +170,10 @@ const initierPaiement = async (req, res) => {
     const loyerMensuel = parseFloat(attribution.prix_mensuel);
     const montantAttendu = loyerMensuel * nbMois;
 
-    // Vérifier que le montant est un multiple exact du loyer
-    if (parseFloat(montant) !== montantAttendu) {
+    // Vérifier que le montant est un multiple exact du loyer.
+    // Comparaison en entiers (FCFA sans centimes) : l'égalité stricte entre
+    // flottants est fragile (ex: 3 × 16666.67).
+    if (Math.round(Number(montant)) !== Math.round(montantAttendu)) {
       return res.status(400).json({
         error: `Le montant doit être un multiple du loyer mensuel (${loyerMensuel} FCFA)`,
         montant_attendu: montantAttendu,
@@ -281,11 +283,11 @@ const initierPaiement = async (req, res) => {
     });
 
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Erreur initiation paiement:', error);
     res.status(500).json({
       error: 'Erreur lors de l\'initiation du paiement',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   } finally {
     client.release();
@@ -293,25 +295,55 @@ const initierPaiement = async (req, res) => {
 };
 
 /**
- * Callback de confirmation de paiement (Orange Money / Moov Money)
+ * Callback de confirmation de paiement (opérateur de paiement)
  * POST /api/paiements/callback
+ *
+ * 🔒 SÉCURITÉ : ce endpoint est public (appelé par l'opérateur), il est donc
+ * protégé par un secret partagé (header x-callback-secret). Sans secret
+ * configuré, le endpoint est désactivé — on ne confirme JAMAIS un paiement
+ * sur la seule foi d'un POST anonyme.
+ * Lors du branchement CinetPay, remplacer ce contrôle par la vérification
+ * HMAC officielle (x-token) de leur documentation.
  */
 const callbackPaiement = async (req, res) => {
+  const callbackSecret = process.env.PAYMENT_CALLBACK_SECRET;
+  if (!callbackSecret) {
+    console.error('❌ Callback reçu mais PAYMENT_CALLBACK_SECRET non configuré — rejet.');
+    return res.status(503).json({ error: 'Callback de paiement non configuré' });
+  }
+
+  const provided = req.headers['x-callback-secret'] || '';
+  const expected = Buffer.from(callbackSecret);
+  const received = Buffer.from(String(provided));
+  const secretOk = expected.length === received.length &&
+    crypto.timingSafeEqual(expected, received);
+  if (!secretOk) {
+    console.warn('⚠️ Callback paiement avec secret invalide — rejet.');
+    return res.status(401).json({ error: 'Non autorisé' });
+  }
+
   const client = await db.getClient();
 
   try {
     const { reference, statut, transaction_id, mode_paiement } = req.body;
 
+    // Référence strictement validée : pas de LIKE sur une entrée libre
+    // (une référence '%' matchait n'importe quel paiement).
+    if (typeof reference !== 'string' || !/^CENOU-\d+-[A-F0-9]{8}$/.test(reference)) {
+      return res.status(400).json({ error: 'Référence invalide' });
+    }
+
     console.log('📩 Callback paiement reçu:', { reference, statut, transaction_id, mode_paiement });
 
-    // Vérifier que le paiement existe
+    // La référence stockée est soit exacte, soit suffixée de l'ID opérateur
     const paiementResult = await client.query(
       `SELECT p.id, p.attribution_id, p.montant, p.statut,
               a.utilisateur_id
        FROM paiements p
        JOIN attributions a ON p.attribution_id = a.id
-       WHERE p.reference_transaction LIKE $1`,
-      [`${reference}%`]
+       WHERE p.reference_transaction = $1
+          OR p.reference_transaction LIKE $1 || '-%'`,
+      [reference]
     );
 
     if (paiementResult.rows.length === 0) {
@@ -322,6 +354,11 @@ const callbackPaiement = async (req, res) => {
     }
 
     const paiement = paiementResult.rows[0];
+
+    // Idempotence : un paiement déjà confirmé ne change plus d'état via callback
+    if (paiement.statut === 'CONFIRME') {
+      return res.json({ message: 'Paiement déjà confirmé', statut: 'CONFIRME' });
+    }
 
     await client.query('BEGIN');
 
@@ -390,11 +427,108 @@ const callbackPaiement = async (req, res) => {
       statut: nouveauStatut,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('❌ Erreur callback paiement:', error);
     res.status(500).json({
       error: 'Erreur lors du traitement du callback',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * SIMULATION — Confirmer son propre paiement en attente
+ * POST /api/paiements/:id/simuler
+ *
+ * Tant que l'intégration CinetPay n'est pas branchée, ce endpoint permet à
+ * l'étudiant (authentifié, propriétaire du paiement) de simuler la
+ * confirmation. Désactivable en mettant PAYMENT_SIMULATION=false.
+ * À SUPPRIMER (ou désactiver) dès que CinetPay est en production.
+ */
+const simulerConfirmation = async (req, res) => {
+  if (process.env.PAYMENT_SIMULATION === 'false') {
+    return res.status(403).json({ error: 'La simulation de paiement est désactivée' });
+  }
+
+  const client = await db.getClient();
+
+  try {
+    const userId = req.user.id;
+    const paiementId = req.params.id;
+
+    // Le paiement doit appartenir à l'utilisateur connecté et être en attente
+    const result = await client.query(
+      `SELECT p.id, p.montant, p.statut, a.utilisateur_id
+       FROM paiements p
+       JOIN attributions a ON p.attribution_id = a.id
+       WHERE p.id = $1 AND a.utilisateur_id = $2`,
+      [paiementId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Paiement introuvable' });
+    }
+
+    const paiement = result.rows[0];
+    if (paiement.statut !== 'EN_ATTENTE') {
+      return res.status(409).json({
+        error: `Ce paiement n'est pas en attente (statut: ${paiement.statut})`,
+      });
+    }
+
+    await client.query('BEGIN');
+
+    await client.query(
+      `UPDATE paiements
+       SET statut = 'CONFIRME', date_paiement = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [paiementId]
+    );
+
+    await client.query(
+      `INSERT INTO transactions (paiement_id, montant, statut, details)
+       VALUES ($1, $2, 'CONFIRME', $3::jsonb)`,
+      [
+        paiementId,
+        paiement.montant,
+        JSON.stringify({
+          simulation: true,
+          confirme_par: userId,
+          timestamp: new Date().toISOString(),
+        }),
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    if (isFirebaseAvailable()) {
+      try {
+        await firebaseDb.collection('notifications').add({
+          userId,
+          title: 'Paiement confirmé ✅',
+          message: `Votre paiement de ${paiement.montant} FCFA a été confirmé (simulation).`,
+          type: 'PAIEMENT',
+          data: { paiement_id: paiement.id, montant: paiement.montant },
+          read: false,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (notifError) {
+        console.error('⚠️ Erreur notification Firebase:', notifError.message);
+      }
+    }
+
+    res.json({
+      message: 'Paiement confirmé (simulation)',
+      paiement: { id: paiement.id, statut: 'CONFIRME' },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('❌ Erreur simulation paiement:', error);
+    res.status(500).json({
+      error: 'Erreur lors de la confirmation du paiement',
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   } finally {
     client.release();
@@ -479,4 +613,5 @@ module.exports = {
   getPendingPaiements,
   initierPaiement,
   callbackPaiement,
+  simulerConfirmation,
 };

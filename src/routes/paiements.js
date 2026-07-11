@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const paiementController = require('../controllers/paiementController');
-const { authenticateToken, authorizeRoles } = require('../middlewares/authMiddleware');
+const { authenticateToken, authorizeRoles, getCentreScope } = require('../middlewares/authMiddleware');
 const { body, validationResult } = require('express-validator');
 const db = require('../config/database');
 
@@ -98,7 +98,7 @@ router.get(
       console.error('Erreur récupération loyer:', error);
       res.status(500).json({
         error: 'Erreur lors de la récupération du loyer',
-        details: error.message,
+        details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
       });
     }
   }
@@ -132,10 +132,23 @@ router.post(
 
 /**
  * @route   POST /api/paiements/callback
- * @desc    Callback de confirmation de paiement (Orange Money / Moov Money)
- * @access  Public (appelé par les opérateurs)
+ * @desc    Callback de confirmation de paiement (opérateur)
+ * @access  Public mais protégé par secret partagé (voir controller)
  */
 router.post('/callback', paiementController.callbackPaiement);
+
+/**
+ * @route   POST /api/paiements/:id/simuler
+ * @desc    SIMULATION — confirmer son propre paiement en attente
+ *          (temporaire, en attendant l'intégration CinetPay)
+ * @access  Private (Étudiant propriétaire)
+ */
+router.post(
+  '/:id/simuler',
+  authenticateToken,
+  authorizeRoles('ETUDIANT'),
+  paiementController.simulerConfirmation
+);
 
 // ==================== ROUTE ADMIN ====================
 
@@ -204,9 +217,13 @@ router.get(
         mode_paiement,
         date_from,
         date_to,
-        centre_id,
         search
       } = req.query;
+
+      // 🔒 Cloisonnement : un gestionnaire ne voit que son centre.
+      // Un admin peut filtrer librement via ?centre_id=…
+      const centreScope = getCentreScope(req);
+      const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
 
       // Construire la clause WHERE pour les filtres
       let whereClause = 'WHERE 1=1';
@@ -256,89 +273,27 @@ router.get(
         paramIndex++;
       }
 
-      // Requête avec les filtres
+      // Une seule passe sur la table grâce à COUNT/SUM … FILTER,
+      // au lieu de 10 sous-requêtes identiques à 4 jointures chacune.
       const query = `
-        SELECT 
-          -- Par statut
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.statut = 'CONFIRME') as confirmes,
-          
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.statut = 'EN_ATTENTE') as en_attente,
-          
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.statut = 'ECHEC') as echecs,
-          
-          -- Par mode
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.mode_paiement = 'ORANGE_MONEY') as orange_money,
-          
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.mode_paiement = 'MOOV_MONEY') as moov_money,
-          
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.mode_paiement = 'ESPECES') as especes,
-          
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.mode_paiement = 'VIREMENT') as virement,
-          
-          -- Totaux
-          (SELECT COALESCE(SUM(p.montant), 0) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.statut = 'CONFIRME') as total_confirme,
-          
-          (SELECT COALESCE(SUM(p.montant), 0) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.statut = 'EN_ATTENTE') as total_en_attente,
-          
-          (SELECT COALESCE(SUM(p.montant), 0) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause} AND p.statut = 'ECHEC') as total_echec,
-          
-          -- Total général (tous statuts confondus)
-          (SELECT COUNT(*) FROM paiements p
-           JOIN attributions a ON p.attribution_id = a.id
-           JOIN logements l ON a.logement_id = l.id
-           JOIN centres c ON l.centre_id = c.id
-           JOIN utilisateurs u ON a.utilisateur_id = u.id
-           ${whereClause}) as total
+        SELECT
+          COUNT(*) FILTER (WHERE p.statut = 'CONFIRME')      as confirmes,
+          COUNT(*) FILTER (WHERE p.statut = 'EN_ATTENTE')    as en_attente,
+          COUNT(*) FILTER (WHERE p.statut = 'ECHEC')         as echecs,
+          COUNT(*) FILTER (WHERE p.mode_paiement = 'ORANGE_MONEY') as orange_money,
+          COUNT(*) FILTER (WHERE p.mode_paiement = 'MOOV_MONEY')   as moov_money,
+          COUNT(*) FILTER (WHERE p.mode_paiement = 'ESPECES')      as especes,
+          COUNT(*) FILTER (WHERE p.mode_paiement = 'VIREMENT')     as virement,
+          COALESCE(SUM(p.montant) FILTER (WHERE p.statut = 'CONFIRME'), 0)   as total_confirme,
+          COALESCE(SUM(p.montant) FILTER (WHERE p.statut = 'EN_ATTENTE'), 0) as total_en_attente,
+          COALESCE(SUM(p.montant) FILTER (WHERE p.statut = 'ECHEC'), 0)      as total_echec,
+          COUNT(*) as total
+        FROM paiements p
+        JOIN attributions a ON p.attribution_id = a.id
+        JOIN logements l ON a.logement_id = l.id
+        JOIN centres c ON l.centre_id = c.id
+        JOIN utilisateurs u ON a.utilisateur_id = u.id
+        ${whereClause}
       `;
 
       // Exécuter la requête avec les paramètres
@@ -380,9 +335,12 @@ router.get(
         mode_paiement,
         date_from,
         date_to,
-        centre_id,
         search
       } = req.query;
+
+      // 🔒 Cloisonnement : un gestionnaire ne voit que son centre
+      const centreScope = getCentreScope(req);
+      const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
 
       const offset = (page - 1) * limit;
 
@@ -510,8 +468,18 @@ router.get(
     try {
       const paiementId = req.params.id;
 
+      // 🔒 Cloisonnement : un gestionnaire ne peut consulter que les
+      // paiements de son centre
+      const centreScope = getCentreScope(req);
+      const params = [paiementId];
+      let centreClause = '';
+      if (centreScope !== null) {
+        centreClause = 'AND c.id = $2';
+        params.push(centreScope);
+      }
+
       const result = await db.query(`
-        SELECT 
+        SELECT
           p.id,
           p.montant,
           p.date_paiement,
@@ -547,8 +515,8 @@ router.get(
         JOIN utilisateurs u ON a.utilisateur_id = u.id
         JOIN logements l ON a.logement_id = l.id
         JOIN centres c ON l.centre_id = c.id
-        WHERE p.id = $1
-      `, [paiementId]);
+        WHERE p.id = $1 ${centreClause}
+      `, params);
 
       if (result.rows.length === 0) {
         return res.status(404).json({
@@ -604,10 +572,24 @@ router.put(
       const { statut, raison } = req.body;
       const adminId = req.user.id;
 
+      // 🔒 Cloisonnement : un gestionnaire ne peut modifier que les
+      // paiements de son centre
+      const centreScope = getCentreScope(req);
+      const checkParams = [paiementId];
+      let centreClause = '';
+      if (centreScope !== null) {
+        centreClause = `AND EXISTS (
+          SELECT 1 FROM attributions a
+          JOIN logements l ON a.logement_id = l.id
+          WHERE a.id = paiements.attribution_id AND l.centre_id = $2
+        )`;
+        checkParams.push(centreScope);
+      }
+
       // Vérifier que le paiement existe
       const checkResult = await client.query(
-        'SELECT id, statut, attribution_id FROM paiements WHERE id = $1',
-        [paiementId]
+        `SELECT id, statut, attribution_id FROM paiements WHERE id = $1 ${centreClause}`,
+        checkParams
       );
 
       if (checkResult.rows.length === 0) {
@@ -685,7 +667,7 @@ router.put(
       });
 
     } catch (error) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       console.error('❌ Erreur mise à jour statut paiement:', error);
       res.status(500).json({
         success: false,

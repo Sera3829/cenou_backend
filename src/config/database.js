@@ -41,11 +41,13 @@ const query = async (text, params, attempt = 1) => {
   const start = Date.now();
   try {
     const res = await pool.query(text, params);
-    console.log('Query executed:', {
-      text: text.substring(0, 80),
-      duration: Date.now() - start,
-      rows: res.rowCount,
-    });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Query executed:', {
+        text: text.substring(0, 80),
+        duration: Date.now() - start,
+        rows: res.rowCount,
+      });
+    }
     return res;
   } catch (err) {
     if (isRetryable(err) && attempt <= MAX_RETRIES) {

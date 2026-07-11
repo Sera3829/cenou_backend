@@ -331,7 +331,7 @@ const genererRapportFinancier = async (req, res) => {
         console.error('Erreur génération rapport financier:', error);
         res.status(500).json({
             error: 'Erreur lors de la génération du rapport financier',
-            details: error.message,
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
         });
     }
 };
@@ -452,7 +452,7 @@ const genererRapportOccupation = async (req, res) => {
         console.error('Erreur génération rapport occupation:', error);
         res.status(500).json({
             error: 'Erreur lors de la génération du rapport d\'occupation',
-            details: error.message,
+            details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
         });
     }
 };

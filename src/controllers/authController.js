@@ -43,11 +43,14 @@ const register = async (req, res) => {
     const newUser = result.rows[0];
 
     // ── Auto-attribution : première chambre disponible ─────────────────
+    // FOR UPDATE SKIP LOCKED : deux inscriptions simultanées ne peuvent pas
+    // obtenir la même chambre (chacune verrouille une ligne différente).
     const chambre = await client.query(`
       SELECT id FROM logements
       WHERE statut = 'DISPONIBLE'
       ORDER BY centre_id ASC, id ASC
       LIMIT 1
+      FOR UPDATE SKIP LOCKED
     `);
 
     let attribution = null;
@@ -116,8 +119,19 @@ const register = async (req, res) => {
 
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
+
+    // Violation d'unicité (inscription simultanée avec même matricule/email) :
+    // les checks préalables ne suffisent pas, la contrainte UNIQUE tranche.
+    if (error.code === '23505') {
+      const champ = error.constraint?.includes('email') ? 'email' : 'matricule';
+      return res.status(409).json({ error: `Ce ${champ} est déjà enregistré` });
+    }
+
     console.error('Erreur inscription:', error);
-    res.status(500).json({ error: 'Erreur lors de l\'inscription', details: error.message });
+    res.status(500).json({
+      error: 'Erreur lors de l\'inscription',
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
+    });
   } finally {
     client.release();
   }
@@ -176,32 +190,9 @@ const login = async (req, res) => {
       });
     }
 
-    // Vérifier si une session active existe déjà
-    if (isFirebaseAvailable()) {
-      try {
-        const sessionDoc = await firebaseDb
-          .collection('sessions')
-          .doc(user.id.toString())
-          .get();
-
-        if (sessionDoc.exists) {
-          const sessionData = sessionDoc.data();
-          const expiresAt = new Date(sessionData.expiresAt);
-          const now = new Date();
-
-          // Si la session n'est pas encore expirée → bloquer
-          if (expiresAt > now) {
-            return res.status(409).json({
-              error: 'Une session est déjà active pour ce compte. Veuillez vous déconnecter d\'abord.',
-            });
-          }
-          // Si expirée → on laisse passer et on écrasera l'ancienne session
-        }
-      } catch (firebaseError) {
-        console.error('⚠️ Erreur vérification session Firebase:', firebaseError.message);
-        // Non bloquant : si Firebase est indisponible, on laisse passer
-      }
-    }
+    // Session unique : un nouveau login écrase l'ancienne session (l'ancien
+    // token devient invalide via le contrôle dans getMe). On ne bloque plus
+    // avec un 409 : un téléphone perdu/réinstallé verrouillait le compte 24h.
 
     // Bloquer Admin/Gestionnaire sur mobile
     // Le frontend mobile envoie un header 'x-platform: mobile'
@@ -266,7 +257,7 @@ const login = async (req, res) => {
     console.error('Erreur lors de la connexion:', error);
     res.status(500).json({
       error: 'Erreur lors de la connexion',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -296,7 +287,7 @@ const logout = async (req, res) => {
     console.error('Erreur lors de la déconnexion:', error);
     res.status(500).json({
       error: 'Erreur lors de la déconnexion',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -364,7 +355,7 @@ const getMe = async (req, res) => {
     console.error('Erreur lors de la récupération du profil:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du profil',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -406,7 +397,7 @@ const refreshToken = async (req, res) => {
     console.error('Erreur lors du rafraîchissement du token:', error);
     res.status(500).json({
       error: 'Erreur lors du rafraîchissement du token',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };

@@ -55,7 +55,7 @@ const getProfile = async (req, res) => {
     console.error('Erreur lors de la récupération du profil:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération du profil',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -126,7 +126,7 @@ const updateProfile = async (req, res) => {
     console.error('Erreur lors de la mise à jour du profil:', error);
     res.status(500).json({
       error: 'Erreur lors de la mise à jour du profil',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -187,7 +187,7 @@ const changePassword = async (req, res) => {
     console.error('Erreur lors du changement de mot de passe:', error);
     res.status(500).json({
       error: 'Erreur lors du changement de mot de passe',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -229,7 +229,7 @@ const getAttributionsHistory = async (req, res) => {
     console.error('Erreur lors de la récupération de l\'historique:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération de l\'historique',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -273,7 +273,7 @@ const getUserStats = async (req, res) => {
     console.error('Erreur lors de la récupération des statistiques:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des statistiques',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -321,7 +321,7 @@ const deactivateAccount = async (req, res) => {
     console.error('Erreur lors de la désactivation du compte:', error);
     res.status(500).json({
       error: 'Erreur lors de la désactivation du compte',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };
@@ -382,7 +382,7 @@ const updateUserStatus = async (req, res) => {
     console.error('❌ Erreur updateUserStatus:', error);
     res.status(500).json({
       error: 'Erreur lors de la mise à jour du statut',
-      details: error.message,
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
     });
   }
 };

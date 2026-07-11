@@ -1,55 +1,79 @@
 const db = require('../config/database');
 const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
+const { getCentreScope } = require('../middlewares/authMiddleware');
 
 /**
  * Récupérer les statistiques du dashboard admin
  * GET /api/admin/dashboard/stats
+ *
+ * 🔒 Cloisonnement : un GESTIONNAIRE ne voit que les chiffres de son centre.
  */
 exports.getDashboardStats = async (req, res) => {
   try {
-    console.log('📊 Récupération statistiques dashboard...');
+    const centreScope = getCentreScope(req);
+    const scoped = centreScope !== null;
+    const scopeParams = scoped ? [centreScope] : [];
+
+    // Filtres conditionnels injectés dans les requêtes (paramétrés, $1 = centre)
+    const logementFilter   = scoped ? 'WHERE l.centre_id = $1' : '';
+    const paiementFilter   = scoped
+      ? `WHERE EXISTS (SELECT 1 FROM attributions a JOIN logements l ON a.logement_id = l.id
+                       WHERE a.id = p.attribution_id AND l.centre_id = $1)`
+      : '';
+    const signalementFilter = scoped
+      ? `WHERE EXISTS (SELECT 1 FROM attributions a JOIN logements l ON a.logement_id = l.id
+                       WHERE a.id = s.attribution_id AND l.centre_id = $1)`
+      : '';
 
     // 1. Statistiques générales
     const generalStats = await db.query(`
-      SELECT 
-        (SELECT COUNT(*) FROM utilisateurs WHERE role = 'ETUDIANT' AND statut = 'ACTIF') as total_etudiants,
-        (SELECT COUNT(*) FROM utilisateurs WHERE role = 'GESTIONNAIRE' AND statut = 'ACTIF') as total_gestionnaires,
+      SELECT
+        (SELECT COUNT(DISTINCT u.id) FROM utilisateurs u
+         ${scoped
+           ? `JOIN attributions a ON a.utilisateur_id = u.id AND a.statut = 'ACTIVE'
+              JOIN logements l ON a.logement_id = l.id AND l.centre_id = $1`
+           : ''}
+         WHERE u.role = 'ETUDIANT' AND u.statut = 'ACTIF') as total_etudiants,
+        (SELECT COUNT(*) FROM utilisateurs
+         WHERE role = 'GESTIONNAIRE' AND statut = 'ACTIF' ${scoped ? 'AND centre_id = $1' : ''}) as total_gestionnaires,
         (SELECT COUNT(*) FROM utilisateurs WHERE role = 'ADMIN' AND statut = 'ACTIF') as total_admins,
-        (SELECT COUNT(*) FROM centres) as total_centres,
-        (SELECT COUNT(*) FROM logements) as total_logements,
-        (SELECT COUNT(*) FROM logements WHERE statut = 'OCCUPE') as logements_occupes,
-        (SELECT COUNT(*) FROM logements WHERE statut = 'DISPONIBLE') as logements_disponibles
-    `);
+        (SELECT COUNT(*) FROM centres ${scoped ? 'WHERE id = $1' : ''}) as total_centres,
+        (SELECT COUNT(*) FROM logements l ${logementFilter}) as total_logements,
+        (SELECT COUNT(*) FROM logements l ${logementFilter} ${scoped ? 'AND' : 'WHERE'} l.statut = 'OCCUPE') as logements_occupes,
+        (SELECT COUNT(*) FROM logements l ${logementFilter} ${scoped ? 'AND' : 'WHERE'} l.statut = 'DISPONIBLE') as logements_disponibles
+    `, scopeParams);
 
     // 2. Statistiques paiements
     const paiementStats = await db.query(`
-      SELECT 
+      SELECT
         COUNT(*) as total_paiements,
-        COUNT(CASE WHEN statut = 'CONFIRME' THEN 1 END) as paiements_confirme,
-        COUNT(CASE WHEN statut = 'EN_ATTENTE' THEN 1 END) as paiements_en_attente,
-        COUNT(CASE WHEN statut = 'ECHEC' THEN 1 END) as paiements_echec,
-        COALESCE(SUM(CASE WHEN statut = 'CONFIRME' THEN montant ELSE 0 END), 0) as montant_total,
-        COALESCE(AVG(CASE WHEN statut = 'CONFIRME' THEN montant END), 0) as montant_moyen,
-        COALESCE(SUM(CASE WHEN statut = 'CONFIRME' AND date_paiement >= CURRENT_DATE - INTERVAL '30 days' THEN montant ELSE 0 END), 0) as montant_30jours
-      FROM paiements
-    `);
+        COUNT(CASE WHEN p.statut = 'CONFIRME' THEN 1 END) as paiements_confirme,
+        COUNT(CASE WHEN p.statut = 'EN_ATTENTE' THEN 1 END) as paiements_en_attente,
+        COUNT(CASE WHEN p.statut = 'ECHEC' THEN 1 END) as paiements_echec,
+        COALESCE(SUM(CASE WHEN p.statut = 'CONFIRME' THEN p.montant ELSE 0 END), 0) as montant_total,
+        COALESCE(AVG(CASE WHEN p.statut = 'CONFIRME' THEN p.montant END), 0) as montant_moyen,
+        COALESCE(SUM(CASE WHEN p.statut = 'CONFIRME' AND p.date_paiement >= CURRENT_DATE - INTERVAL '30 days' THEN p.montant ELSE 0 END), 0) as montant_30jours
+      FROM paiements p
+      ${paiementFilter}
+    `, scopeParams);
 
     // 3. Statistiques signalements
     const signalementStats = await db.query(`
-      SELECT 
+      SELECT
         COUNT(*) as total_signalements,
-        COUNT(CASE WHEN statut = 'EN_ATTENTE' THEN 1 END) as signalements_en_attente,
-        COUNT(CASE WHEN statut = 'EN_COURS' THEN 1 END) as signalements_en_cours,
-        COUNT(CASE WHEN statut = 'RESOLU' THEN 1 END) as signalements_resolus,
-        COUNT(CASE WHEN statut = 'ANNULE' THEN 1 END) as signalements_annules,
-        ROUND(AVG(EXTRACT(EPOCH FROM (COALESCE(date_resolution, CURRENT_TIMESTAMP) - created_at)) / 86400), 1) as duree_moyenne_jours,
-        COUNT(DISTINCT type_probleme) as types_problemes_differents
-      FROM signalements
-    `);
+        COUNT(CASE WHEN s.statut = 'EN_ATTENTE' THEN 1 END) as signalements_en_attente,
+        COUNT(CASE WHEN s.statut = 'EN_COURS' THEN 1 END) as signalements_en_cours,
+        COUNT(CASE WHEN s.statut = 'RESOLU' THEN 1 END) as signalements_resolus,
+        COUNT(CASE WHEN s.statut = 'ANNULE' THEN 1 END) as signalements_annules,
+        ROUND(AVG(EXTRACT(EPOCH FROM (COALESCE(s.date_resolution, CURRENT_TIMESTAMP) - s.created_at)) / 86400), 1) as duree_moyenne_jours,
+        COUNT(DISTINCT s.type_probleme) as types_problemes_differents
+      FROM signalements s
+      ${signalementFilter}
+    `, scopeParams);
 
     // 4. Répartition par centre
     const centreStats = await db.query(`
-      SELECT 
+      SELECT
         c.id,
         c.nom,
         c.ville,
@@ -61,13 +85,14 @@ exports.getDashboardStats = async (req, res) => {
       LEFT JOIN logements l ON c.id = l.centre_id
       LEFT JOIN attributions a ON l.id = a.logement_id
       LEFT JOIN paiements p ON a.id = p.attribution_id
+      ${scoped ? 'WHERE c.id = $1' : ''}
       GROUP BY c.id, c.nom, c.ville
       ORDER BY c.nom
-    `);
+    `, scopeParams);
 
     // 5. Dernières activités
 const recentActivity = await db.query(`
-  (SELECT 
+  (SELECT
     'PAIEMENT' as type,
     'Paiement confirmé' as action,
     CONCAT(u.prenom, ' ', u.nom) as user,
@@ -77,13 +102,15 @@ const recentActivity = await db.query(`
   FROM paiements p
   JOIN attributions a ON p.attribution_id = a.id
   JOIN utilisateurs u ON a.utilisateur_id = u.id
+  JOIN logements l ON a.logement_id = l.id
   WHERE p.statut = 'CONFIRME'
+    ${scoped ? 'AND l.centre_id = $1' : ''}
   ORDER BY p.date_paiement DESC
   LIMIT 5)
-  
+
   UNION ALL
-  
-  (SELECT 
+
+  (SELECT
     'SIGNALEMENT' as type,
     CONCAT('Signalement ', s.type_probleme) as action,
     CONCAT(u.prenom, ' ', u.nom) as user,
@@ -94,26 +121,32 @@ const recentActivity = await db.query(`
   JOIN attributions a ON s.attribution_id = a.id
   JOIN utilisateurs u ON a.utilisateur_id = u.id
   JOIN logements l ON a.logement_id = l.id
+  ${scoped ? 'WHERE l.centre_id = $1' : ''}
   ORDER BY s.created_at DESC
   LIMIT 5)
-  
+
   UNION ALL
-  
-  (SELECT 
+
+  (SELECT
     'INSCRIPTION' as type,
     'Nouvel étudiant' as action,
-    CONCAT(prenom, ' ', nom) as user,
-    matricule::TEXT as details,
-    created_at as timestamp,
-    id as reference_id
-  FROM utilisateurs
-  WHERE role = 'ETUDIANT'
-  ORDER BY created_at DESC
+    CONCAT(u.prenom, ' ', u.nom) as user,
+    u.matricule::TEXT as details,
+    u.created_at as timestamp,
+    u.id as reference_id
+  FROM utilisateurs u
+  WHERE u.role = 'ETUDIANT'
+    ${scoped ? `AND EXISTS (
+      SELECT 1 FROM attributions a
+      JOIN logements l ON a.logement_id = l.id
+      WHERE a.utilisateur_id = u.id AND a.statut = 'ACTIVE' AND l.centre_id = $1
+    )` : ''}
+  ORDER BY u.created_at DESC
   LIMIT 5)
-  
+
   ORDER BY timestamp DESC
   LIMIT 15
-`);
+`, scopeParams);
 
     res.json({
       success: true,
@@ -132,7 +165,7 @@ const recentActivity = await db.query(`
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la récupération des statistiques',
-      details: error.message
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -143,8 +176,12 @@ const recentActivity = await db.query(`
  */
 exports.getChartsData = async (req, res) => {
   try {
-    const { period = 'month', centre_id } = req.query;
-    
+    const { period = 'month' } = req.query;
+
+    // 🔒 Cloisonnement : un gestionnaire ne voit que les graphiques de son centre
+    const centreScope = getCentreScope(req);
+    const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
+
     // Validation de la période
     const validPeriods = ['day', 'week', 'month', 'year'];
     const chartPeriod = validPeriods.includes(period) ? period : 'month';
@@ -192,9 +229,9 @@ exports.getChartsData = async (req, res) => {
       ORDER BY count DESC
     `, centre_id ? [centre_id] : []);
 
-    // 4. Occupation par centre
+    // 4. Occupation par centre (limitée au centre du gestionnaire si cloisonné)
     const occupationChart = await db.query(`
-      SELECT 
+      SELECT
         c.nom as centre,
         COUNT(l.id) as total_logements,
         COUNT(CASE WHEN l.statut = 'OCCUPE' THEN 1 END) as logements_occupes,
@@ -203,9 +240,10 @@ exports.getChartsData = async (req, res) => {
         ROUND(COUNT(CASE WHEN l.statut = 'OCCUPE' THEN 1 END) * 100.0 / NULLIF(COUNT(l.id), 0), 1) as taux_occupation
       FROM centres c
       LEFT JOIN logements l ON c.id = l.centre_id
+      ${centre_id ? 'WHERE c.id = $1' : ''}
       GROUP BY c.id, c.nom
       ORDER BY taux_occupation DESC
-    `);
+    `, centre_id ? [centre_id] : []);
 
     res.json({
       success: true,
@@ -237,6 +275,13 @@ exports.getRecentActivity = async (req, res) => {
     const half  = Math.floor(parseInt(limit) / 2);
     const qrtr  = Math.floor(parseInt(limit) / 4);
     const total = parseInt(limit);
+
+    // 🔒 Cloisonnement : un gestionnaire ne voit que l'activité de son centre
+    const centreScope = getCentreScope(req);
+    const scoped = centreScope !== null;
+    const activityParams = scoped
+      ? [half, qrtr, qrtr, total, centreScope]
+      : [half, qrtr, qrtr, total];
  
     const activity = await db.query(`
       -- ── Paiements confirmés ──────────────────────────────────────────
@@ -260,6 +305,7 @@ exports.getRecentActivity = async (req, res) => {
        JOIN logements    l ON a.logement_id      = l.id   -- ← JOIN ajouté
        JOIN centres      c ON l.centre_id         = c.id  -- ← JOIN ajouté
        WHERE p.statut = 'CONFIRME'
+         ${scoped ? 'AND l.centre_id = $5' : ''}
        ORDER BY p.date_paiement DESC
        LIMIT $1)
  
@@ -286,6 +332,7 @@ exports.getRecentActivity = async (req, res) => {
        JOIN logements    l ON a.logement_id      = l.id
        JOIN centres      c ON l.centre_id         = c.id
        WHERE p.statut = 'EN_ATTENTE'
+         ${scoped ? 'AND l.centre_id = $5' : ''}
        ORDER BY p.created_at DESC
        LIMIT $1)
  
@@ -311,6 +358,7 @@ exports.getRecentActivity = async (req, res) => {
        JOIN utilisateurs u ON a.utilisateur_id  = u.id
        JOIN logements    l ON a.logement_id      = l.id   -- ← JOIN ajouté
        JOIN centres      c ON l.centre_id         = c.id  -- ← JOIN ajouté
+       ${scoped ? 'WHERE l.centre_id = $5' : ''}
        ORDER BY s.created_at DESC
        LIMIT $1)
  
@@ -336,6 +384,7 @@ exports.getRecentActivity = async (req, res) => {
        JOIN centres      c ON l.centre_id         = c.id
        WHERE s.statut = 'RESOLU'
          AND s.date_resolution IS NOT NULL
+         ${scoped ? 'AND l.centre_id = $5' : ''}
        ORDER BY s.date_resolution DESC
        LIMIT $2)
  
@@ -355,12 +404,17 @@ exports.getRecentActivity = async (req, res) => {
         ) AS metadata
        FROM utilisateurs u
        WHERE u.role IN ('ETUDIANT', 'GESTIONNAIRE')
+         ${scoped ? `AND EXISTS (
+           SELECT 1 FROM attributions a
+           JOIN logements l ON a.logement_id = l.id
+           WHERE a.utilisateur_id = u.id AND a.statut = 'ACTIVE' AND l.centre_id = $5
+         )` : ''}
        ORDER BY u.created_at DESC
        LIMIT $3)
- 
+
       ORDER BY timestamp DESC NULLS LAST
       LIMIT $4
-    `, [half, qrtr, qrtr, total]);
+    `, activityParams);
  
     res.json({
       success: true,
@@ -385,13 +439,17 @@ exports.getRecentActivity = async (req, res) => {
  */
 exports.getFinancialReport = async (req, res) => {
   try {
-    const { 
-      date_from, 
-      date_to, 
-      centre_id,
+    const {
+      date_from,
+      date_to,
       statut = 'CONFIRME',
       format = 'json'
     } = req.query;
+
+    // 🔒 Cloisonnement : un gestionnaire ne peut générer un rapport
+    // financier que sur son propre centre
+    const centreScope = getCentreScope(req);
+    const centre_id = centreScope !== null ? centreScope : req.query.centre_id;
 
     let query = `
       SELECT 
@@ -734,7 +792,7 @@ exports.createAnnouncement = async (req, res) => {
     });
 
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error('❌ Erreur création annonce:', error);
     res.status(500).json({
       success: false,
