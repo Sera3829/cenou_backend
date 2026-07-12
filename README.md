@@ -5,6 +5,9 @@ API REST du système **Cenou Room** (CENOU — Burkina Faso) : gestion des logem
 - **Production** : https://cenou-backend.onrender.com (déploiement automatique à chaque push sur `main`)
 - **Frontend associé** : [cenou_frontend](https://github.com/Sera3829/cenou_frontend) (app mobile Flutter + dashboard web)
 
+![Dashboard alimenté par cette API](https://raw.githubusercontent.com/Sera3829/cenou_frontend/main/screenshots/web/dashboard.png)
+*Le dashboard et l'app mobile alimentés par cette API — [plus de captures ici](https://github.com/Sera3829/cenou_frontend#aperçu).*
+
 ## Stack technique
 
 | Composant | Technologie |
