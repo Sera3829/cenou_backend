@@ -110,6 +110,22 @@ database/
 └── migration_002_securite_centres.sql   # migration base existante (idempotente)
 ```
 
+## Tests
+
+```bash
+npm test          # lance la suite Jest (61 tests)
+npm run test:watch
+```
+
+Les tests s'exécutent **sans aucun service externe** : la base PostgreSQL est mockée et Firebase désactivé. Couverture ciblée sur les zones critiques :
+
+- sécurité du callback de paiement (secret, format de référence, idempotence)
+- authentification JWT et contrôle des rôles
+- cloisonnement par centre des gestionnaires (y compris le fail closed)
+- logique métier des paiements (montant = loyer × mois, bornes)
+- inscription (unicité concurrente, verrouillage de chambre) et connexion
+- règles de validation des entrées
+
 ## Notes d'exploitation
 
 - **Neon** s'endort après 5 min d'inactivité : le serveur intègre un retry automatique des requêtes (cold start ~10-20 s) et un keepalive en journée (10h-18h UTC).
