@@ -1,47 +1,29 @@
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 
-// Créer le dossier uploads s'il n'existe pas
-const uploadsDir = path.join(__dirname, '../../uploads/signalements');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Configuration du stockage
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadsDir);
-  },
-  filename: function (req, file, cb) {
-    // Générer un nom unique : timestamp-random-extension
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, 'signalement-' + uniqueSuffix + ext);
-  }
-});
+// Stockage en MÉMOIRE : les photos partent directement vers Cloudinary.
+// Plus aucune écriture sur le disque local — sur Render, le disque est
+// éphémère et les fichiers disparaissaient à chaque redéploiement.
+const storage = multer.memoryStorage();
 
 // Filtrer les types de fichiers acceptés
 const fileFilter = (req, file, cb) => {
-  // Accepter uniquement les images
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
 
   if (mimetype && extname) {
     return cb(null, true);
-  } else {
-    cb(new Error('Seules les images (JPEG, PNG, GIF, WebP) sont acceptées'));
   }
+  cb(new Error('Seules les images (JPEG, PNG, GIF, WebP) sont acceptées'));
 };
 
-// Configuration de multer
 const upload = multer({
-  storage: storage,
+  storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // Limite à 10 MB par fichier
+    fileSize: 10 * 1024 * 1024, // 10 MB par fichier
   },
-  fileFilter: fileFilter,
+  fileFilter,
 });
 
 // Middleware pour upload multiple (max 5 photos)
@@ -57,7 +39,7 @@ const handleUploadErrors = (req, res, next) => {
           details: 'La taille maximale par fichier est de 10 MB',
         });
       }
-      if (err.code === 'LIMIT_FILE_COUNT') {
+      if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
         return res.status(400).json({
           error: 'Trop de fichiers',
           details: 'Maximum 5 photos autorisées',
@@ -79,5 +61,4 @@ const handleUploadErrors = (req, res, next) => {
 
 module.exports = {
   uploadSignalementPhotos: handleUploadErrors,
-  uploadsDir,
 };

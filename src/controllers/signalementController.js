@@ -1,8 +1,7 @@
 const db = require('../config/database');
 const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
 const { getCentreScope } = require('../middlewares/authMiddleware');
-const { deleteFiles } = require('../utils/imageProcessor');
-const path = require('path');
+const { uploadBuffer } = require('../config/cloudinary');
 const crypto = require('crypto');
 
 /**
@@ -29,11 +28,6 @@ const creerSignalement = async (req, res) => {
     );
 
     if (attributionResult.rows.length === 0) {
-      // Supprimer les photos uploadées
-      if (photos.length > 0) {
-        deleteFiles(photos.map(f => f.path));
-      }
-
       return res.status(400).json({
         error: 'Aucune attribution active trouvée',
       });
@@ -44,43 +38,40 @@ const creerSignalement = async (req, res) => {
     // Générer un numéro de suivi unique
     const numeroSuivi = `#${Date.now()}${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 
+    // Upload des photos vers Cloudinary AVANT d'ouvrir la transaction
+    // (pas d'appels réseau pendant qu'une transaction est ouverte).
+    // Les fichiers sont en mémoire (multer memoryStorage) : rien sur le disque.
+    const photoUrls = [];
+    if (photos.length > 0) {
+      console.log(`📸 Upload de ${photos.length} photo(s) vers Cloudinary…`);
+      for (const photo of photos) {
+        try {
+          const url = await uploadBuffer(photo.buffer, 'cenou/signalements');
+          photoUrls.push(url);
+        } catch (err) {
+          console.error(`❌ Erreur upload photo: ${err.message}`);
+        }
+      }
+      // Des photos étaient jointes mais aucune n'a pu être stockée :
+      // on refuse plutôt que de créer un signalement amputé de ses preuves.
+      if (photoUrls.length === 0) {
+        return res.status(502).json({
+          error: 'Impossible de stocker les photos pour le moment. Réessayez.',
+        });
+      }
+    }
+
     await client.query('BEGIN');
 
-    // Compresser les photos si nécessaire
-const { uploadImage } = require('../config/cloudinary');
-
-let photoPaths = [];
-if (photos.length > 0) {
-  console.log(`📸 Upload de ${photos.length} photo(s) vers Cloudinary...`);
-  for (const photo of photos) {
-    try {
-      const url = await uploadImage(photo.path, 'cenou/signalements');
-      photoPaths.push(url);
-      console.log(`✅ Photo uploadée: ${url}`);
-    } catch (err) {
-      console.error(`❌ Erreur upload photo: ${err.message}`);
-    }
-  }
-  deleteFiles(photos.map(f => f.path));
-
-    // Créer le signalement
-    const user = req.user; // ← injecté par authenticateToken
-
+    // ⚠️ Bug historique corrigé : l'INSERT était à l'intérieur du bloc
+    // `if (photos.length > 0)` — un signalement SANS photo n'était jamais
+    // créé et la requête restait sans réponse, transaction ouverte.
     const result = await client.query(
-      `INSERT INTO signalements 
-      (attribution_id, type_probleme, description, photos, numero_suivi, statut, user_id, numero_chambre, nom_centre) 
-       VALUES ($1, $2, $3, $4, $5, 'EN_ATTENTE', $6, $7, $8) 
-      RETURNING id, numero_suivi, type_probleme, description, statut, created_at`,
-      [
-        attribution.id,       
-        type_probleme,
-        description,
-        photoPaths,
-        numeroSuivi,
-        user.id,              
-        user.numero_chambre, 
-        user.nom_centre       
-      ]
+      `INSERT INTO signalements
+        (attribution_id, type_probleme, description, photos, numero_suivi, statut)
+       VALUES ($1, $2, $3, $4, $5, 'EN_ATTENTE')
+       RETURNING id, numero_suivi, type_probleme, description, statut, created_at`,
+      [attribution.id, type_probleme, description, photoUrls, numeroSuivi]
     );
 
     const signalement = result.rows[0];
@@ -111,31 +102,26 @@ if (photos.length > 0) {
     }
 
     res.status(201).json({
-  message: 'Signalement créé avec succès',
-  signalement: {
-    id: signalement.id,
-    numero_suivi: signalement.numero_suivi,
-    type_probleme: signalement.type_probleme,
-    description: signalement.description,
-    statut: signalement.statut,
-    photos: photoPaths, // ← renvoie la liste des photos
-    photos_count: photoPaths.length,
-    created_at: signalement.created_at,
-    updated_at: signalement.updated_at || new Date().toISOString(), // ← renvoie updated_at
-    numero_chambre: user.numero_chambre, // ← renvoie chambre
-    nom_centre: user.nom_centre,         // ← renvoie centre
-    commentaire_resolution: null,
-    date_resolution: null,
-  },
-});}
+      message: 'Signalement créé avec succès',
+      signalement: {
+        id: signalement.id,
+        numero_suivi: signalement.numero_suivi,
+        type_probleme: signalement.type_probleme,
+        description: signalement.description,
+        statut: signalement.statut,
+        photos: photoUrls,
+        photos_count: photoUrls.length,
+        created_at: signalement.created_at,
+        updated_at: signalement.updated_at || new Date().toISOString(),
+        numero_chambre: attribution.numero_chambre,
+        nom_centre: attribution.nom_centre,
+        commentaire_resolution: null,
+        date_resolution: null,
+      },
+    });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Erreur lors de la création du signalement:', error);
-
-    // Supprimer les photos uploadées en cas d'erreur
-    if (req.files && req.files.length > 0) {
-      deleteFiles(req.files.map(f => f.path));
-    }
 
     res.status(500).json({
       error: 'Erreur lors de la création du signalement',
@@ -262,19 +248,18 @@ const getSignalementPhoto = async (req, res) => {
       });
     }
 
-    const photoPath = photos[photoIndex];
+    const photo = photos[photoIndex];
 
-    // Vérifier que le fichier existe
-    const fs = require('fs');
-    if (!fs.existsSync(photoPath)) {
-      return res.status(404).json({
-        error: 'Fichier photo introuvable sur le serveur',
-      });
+    // Les photos sont désormais des URLs Cloudinary : on redirige le client.
+    if (/^https?:\/\//.test(photo)) {
+      return res.redirect(photo);
     }
 
-    // Envoyer la photo
-    const absolutePath = path.join(__dirname, "..", photoPath);
-  res.sendFile(absolutePath);
+    // Ancien format : chemin sur le disque local de Render (éphémère) —
+    // ces fichiers n'existent plus après un redéploiement.
+    return res.status(410).json({
+      error: 'Cette photo n\'est plus disponible (ancien stockage local)',
+    });
 
   } catch (error) {
     console.error('Erreur lors de la récupération de la photo:', error);

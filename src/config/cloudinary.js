@@ -26,6 +26,34 @@ const uploadImage = async (filePath, folder = 'signalements') => {
 };
 
 /**
+ * Upload une image vers Cloudinary depuis un buffer mémoire
+ * (multer memoryStorage : aucun fichier n'est écrit sur le disque,
+ * indispensable sur Render dont le disque est éphémère).
+ * @param {Buffer} buffer - Contenu du fichier
+ * @param {string} folder - Dossier dans Cloudinary
+ * @returns {Promise<string>} URL publique HTTPS de l'image
+ */
+const uploadBuffer = (buffer, folder = 'cenou/signalements') => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: 'image',
+        transformation: [
+          { quality: 'auto', fetch_format: 'auto' },
+          { width: 1200, crop: 'limit' },
+        ],
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
+    stream.end(buffer);
+  });
+};
+
+/**
  * Supprimer une image de Cloudinary
  * @param {string} publicId - ID public de l'image
  */
@@ -33,4 +61,4 @@ const deleteImage = async (publicId) => {
   await cloudinary.uploader.destroy(publicId);
 };
 
-module.exports = { cloudinary, uploadImage, deleteImage };
+module.exports = { cloudinary, uploadImage, uploadBuffer, deleteImage };
