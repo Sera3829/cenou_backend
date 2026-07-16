@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const { db: firebaseDb, messaging, isFirebaseAvailable } = require('../config/firebase');
+const notificationBroadcast = require('../services/notificationBroadcastService');
 
 /**
  * Enregistrer le token FCM d'un appareil
@@ -40,149 +41,11 @@ const registerFCMToken = async (req, res) => {
 };
 
 /**
- * ✅ NOUVELLE VERSION : Correspond à l'appel depuis annonceController
- * Envoyer des notifications en masse directement
- * @param {number} annonceId - ID de l'annonce
- * @param {string} titre - Titre de la notification
- * @param {string} message - Message de la notification
- * @param {string} type - Type (TOUS, CENTRE_SPECIFIQUE, ETUDIANTS)
- * @param {Array<number>} userIds - Liste des IDs utilisateurs
- * @param {number} createdBy - ID créateur
+ * Diffusion en masse — délègue au service partagé notificationBroadcastService
+ * (même logique réutilisée par le domaine annonces, plus de duplication).
  */
-const sendBulkNotificationsDirect = async (annonceId, titre, message, type, userIds, createdBy) => {
-  try {
-    console.log('📤 [NOTIFICATIONS] Début envoi bulk');
-    console.log(`  - Annonce ID: ${annonceId}`);
-    console.log(`  - Titre: ${titre}`);
-    console.log(`  - Type: ${type}`);
-    console.log(`  - Destinataires: ${userIds?.length || 0}`);
-    console.log(`  - Créé par: ${createdBy}`);
-
-    if (!isFirebaseAvailable()) {
-      console.log('⚠️ Firebase non disponible');
-      return { 
-        success: false, 
-        sent: 0,
-        failed: userIds?.length || 0
-      };
-    }
-
-    if (!Array.isArray(userIds) || userIds.length === 0) {
-      return { 
-        success: true, 
-        sent: 0,
-        failed: 0
-      };
-    }
-
-    let sent = 0;
-    let failed = 0;
-
-    // ✅ Créer les notifications et envoyer les push
-    for (const userId of userIds) {
-      try {
-        const userIdNumber = parseInt(userId);
-        
-        console.log(`📤 Traitement userId: ${userIdNumber}`);
-
-        // ✅ CORRIGÉ : Récupérer fcm_token (pas token)
-        const tokenDoc = await firebaseDb.collection('fcm_tokens').doc(userIdNumber.toString()).get();
-
-        if (!tokenDoc.exists) {
-          console.log(`⚠️ Token FCM non trouvé pour userId ${userIdNumber}`);
-          failed++;
-          continue;
-        }
-
-        const tokenData = tokenDoc.data();
-        const fcmToken = tokenData.fcm_token;  // ✅ CLEF CORRECTE
-
-        if (!fcmToken) {
-          console.log(`⚠️ Token FCM vide pour userId ${userIdNumber}`);
-          failed++;
-          continue;
-        }
-
-        // ✅ Créer la notification dans Firestore avec userId en NUMBER
-        const notificationRef = await firebaseDb.collection('notifications').add({
-          userId: userIdNumber,  // ✅ NUMBER
-          title: titre,
-          message: message.length > 100 ? message.substring(0, 100) + '...' : message,
-          type: 'ANNONCE',
-          data: {
-            annonce_id: String(annonceId),
-            type: 'ANNONCE',
-            cible: String(type),
-            created_by: String(createdBy)
-          },
-          read: false,
-          createdAt: new Date().toISOString(),
-        });
-
-        console.log(`✅ Notification créée dans Firestore: ${notificationRef.id} pour userId ${userIdNumber}`);
-
-        // ✅ Envoyer la notification push FCM
-        const payload = {
-          notification: {
-            title: titre,
-            body: message.length > 100 ? message.substring(0, 100) + '...' : message,
-          },
-          data: {
-            notificationId: notificationRef.id,
-            annonce_id: String(annonceId),
-            type: 'ANNONCE',
-            cible: String(type),
-            created_by: String(createdBy),
-            click_action: 'FLUTTER_NOTIFICATION_CLICK',
-          },
-          android: {
-            priority: 'high',
-            notification: {
-              sound: 'default',
-              channelId: 'annonces',
-            }
-          },
-          apns: {
-            payload: {
-              aps: {
-                sound: 'default',
-                badge: 1,
-              }
-            }
-          },
-          token: fcmToken,
-        };
-
-        await messaging.send(payload);
-        console.log(`✅ Push FCM envoyé à userId ${userIdNumber}`);
-        
-        sent++;
-
-      } catch (error) {
-        console.error(`❌ Erreur envoi userId ${userId}:`, error.message);
-        failed++;
-      }
-    }
-
-    console.log(`✅ [NOTIFICATIONS] Résultat: ${sent} envoyées, ${failed} échecs`);
-
-    return {
-      success: true,
-      sent,
-      failed,
-      total: userIds.length
-    };
-
-  } catch (error) {
-    console.error('❌ [NOTIFICATIONS] Erreur sendBulkNotificationsDirect:', error);
-    return {
-      success: false,
-      sent: 0,
-      failed: userIds?.length || 0,
-      error: error.message
-    };
-  }
-};
+const sendBulkNotificationsDirect = (annonceId, titre, message, type, userIds, createdBy) =>
+  notificationBroadcast.diffuserAnnonce(annonceId, titre, message, type, userIds, createdBy);
 
 /**
  * Récupérer l'historique des notifications de l'utilisateur

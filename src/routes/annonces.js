@@ -1,47 +1,21 @@
-// routes/annonces.js
+/**
+ * Routes /api/annonces — câblage uniquement.
+ */
 const express = require('express');
 const router = express.Router();
 const annonceController = require('../controllers/annonceController');
 const { authenticateToken, authorizeRoles } = require('../middlewares/authMiddleware');
 
-// Créer une annonce
-router.post('/send', 
-  authenticateToken, 
-  authorizeRoles('ADMIN', 'GESTIONNAIRE'), 
-  annonceController.sendAnnonce
-);
+const gestion = [authenticateToken, authorizeRoles('ADMIN', 'GESTIONNAIRE')];
 
-// Récupérer toutes les annonces (admin)
-router.get('/admin/all', 
-  authenticateToken, 
-  authorizeRoles('ADMIN', 'GESTIONNAIRE'), 
-  annonceController.getAnnoncesAdmin
-);
+// Routes admin (avant les routes paramétriques pour éviter tout masquage)
+router.post('/send', ...gestion, annonceController.sendAnnonce);
+router.get('/admin/all', ...gestion, annonceController.getAnnoncesAdmin);
+router.put('/admin/:annonceId/statut', ...gestion, annonceController.updateAnnonceStatut);
 
-// Récupérer les annonces pour étudiants
-router.get('/', 
-  authenticateToken, 
-  annonceController.getAnnoncesEtudiant
-);
-
-// Récupérer une annonce spécifique par ID
-router.get('/:annonceId', 
-  authenticateToken, 
-  annonceController.getAnnonceById
-);
-
-// Mettre à jour le statut
-router.put('/admin/:annonceId/statut', 
-  authenticateToken, 
-  authorizeRoles('ADMIN', 'GESTIONNAIRE'), 
-  annonceController.updateAnnonceStatut
-);
-
-// Supprimer une annonce - CORRECTION : retirer "/admin" du chemin
-router.delete('/:annonceId', 
-  authenticateToken, 
-  authorizeRoles('ADMIN', 'GESTIONNAIRE'), 
-  annonceController.deleteAnnonce
-);
+// Routes utilisateur
+router.get('/', authenticateToken, annonceController.getAnnoncesEtudiant);
+router.delete('/:annonceId', ...gestion, annonceController.deleteAnnonce);
+router.get('/:annonceId', authenticateToken, annonceController.getAnnonceById);
 
 module.exports = router;
