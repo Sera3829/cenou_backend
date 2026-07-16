@@ -669,6 +669,25 @@ router.post(
         }
       }
 
+      // Le centre_id n'est stocké sur l'utilisateur que pour les GESTIONNAIRE
+      // (pour un étudiant, le centre découle de son attribution/logement).
+      // Sans ça, un gestionnaire créé via le dashboard avait centre_id NULL
+      // et ne voyait aucune donnée (fail closed).
+      let centreIdGestionnaire = null;
+      if (role === 'GESTIONNAIRE') {
+        if (!centre_id) {
+          return res.status(400).json({
+            success: false,
+            error: 'Le centre est obligatoire pour un gestionnaire.',
+          });
+        }
+        const centreCheck = await client.query('SELECT id FROM centres WHERE id = $1', [centre_id]);
+        if (centreCheck.rows.length === 0) {
+          return res.status(400).json({ success: false, error: 'Centre introuvable.' });
+        }
+        centreIdGestionnaire = centre_id;
+      }
+
       // Vérifier si le matricule existe déjà
       const existingMatricule = await client.query(
         'SELECT id FROM utilisateurs WHERE matricule = $1',
@@ -704,14 +723,14 @@ router.post(
       // Créer l'utilisateur
       const userResult = await client.query(`
         INSERT INTO utilisateurs (
-          matricule, nom, prenom, email, telephone, 
-          mot_de_passe, role, statut, created_by
+          matricule, nom, prenom, email, telephone,
+          mot_de_passe, role, statut, created_by, centre_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id, matricule, nom, prenom, email, telephone, role, statut, created_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id, matricule, nom, prenom, email, telephone, role, statut, centre_id, created_at
       `, [
         matricule, nom, prenom, email, telephone || null,
-        hashedPassword, role, statut, adminId
+        hashedPassword, role, statut, adminId, centreIdGestionnaire
       ]);
 
       const newUser = userResult.rows[0];
@@ -805,6 +824,10 @@ router.put(
       .optional()
       .isIn(['ACTIF', 'INACTIF', 'SUSPENDU'])
       .withMessage('Le statut doit être: ACTIF, INACTIF ou SUSPENDU'),
+    body('centre_id')
+      .optional({ nullable: true })
+      .isInt()
+      .withMessage('L\'ID du centre doit être un nombre entier'),
     body('logement_id')
       .optional()
       .isInt()
@@ -821,7 +844,7 @@ router.put(
   validate,
   async (req, res) => {
     const client = await db.getClient();
-    
+
     try {
       const userId = req.params.id;
       const updates = req.body;
@@ -928,6 +951,21 @@ router.put(
       if (updates.statut) {
         updateFields.push(`statut = $${paramIndex}`);
         updateValues.push(updates.statut);
+        paramIndex++;
+      }
+
+      // Rattachement à un centre : uniquement pertinent pour un GESTIONNAIRE.
+      // Réservé à l'admin (un gestionnaire est déjà bloqué plus haut s'il
+      // tente de modifier un non-étudiant).
+      if (updates.centre_id !== undefined && user.role === 'GESTIONNAIRE') {
+        if (updates.centre_id !== null) {
+          const centreCheck = await client.query('SELECT id FROM centres WHERE id = $1', [updates.centre_id]);
+          if (centreCheck.rows.length === 0) {
+            return res.status(400).json({ success: false, error: 'Centre introuvable.' });
+          }
+        }
+        updateFields.push(`centre_id = $${paramIndex}`);
+        updateValues.push(updates.centre_id);
         paramIndex++;
       }
 
