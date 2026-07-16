@@ -1,6 +1,6 @@
 const express = require('express');
 const request = require('supertest');
-const { registerValidation, loginValidation, validate } = require('../../src/utils/validators');
+const { registerValidation, loginValidation, validate } = require('../../src/validators/authValidator');
 
 // Mini-application : seules les règles de validation sont testées,
 // le contrôleur est remplacé par un écho.

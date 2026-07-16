@@ -97,6 +97,39 @@ const centreExiste = async (centreId, exec = db) => {
   return r.rows.length > 0;
 };
 
+/** Attribution active détaillée (pour le profil étudiant) */
+const attributionActiveDetaillee = async (utilisateurId, exec = db) => {
+  const r = await exec.query(
+    `SELECT a.id, a.date_debut, a.date_fin, a.statut as statut_attribution,
+            l.numero_chambre, l.type_chambre, l.prix_mensuel, l.statut as statut_logement,
+            c.nom as nom_centre, c.ville
+     FROM attributions a
+     JOIN logements l ON a.logement_id = l.id
+     JOIN centres c ON l.centre_id = c.id
+     WHERE a.utilisateur_id = $1 AND a.statut = 'ACTIVE'
+     ORDER BY a.date_debut DESC
+     LIMIT 1`,
+    [utilisateurId]
+  );
+  return r.rows[0] || null;
+};
+
+/** Historique complet des attributions d'un utilisateur */
+const historiqueAttributions = async (utilisateurId, exec = db) => {
+  const r = await exec.query(
+    `SELECT a.id, a.date_debut, a.date_fin, a.statut,
+            l.numero_chambre, l.type_chambre, l.prix_mensuel,
+            c.nom as nom_centre, c.ville, a.created_at
+     FROM attributions a
+     JOIN logements l ON a.logement_id = l.id
+     JOIN centres c ON l.centre_id = c.id
+     WHERE a.utilisateur_id = $1
+     ORDER BY a.date_debut DESC`,
+    [utilisateurId]
+  );
+  return r.rows;
+};
+
 module.exports = {
   reserverChambreDisponible,
   changerStatut,
@@ -108,4 +141,6 @@ module.exports = {
   terminerAttribution,
   estDansCentre,
   centreExiste,
+  attributionActiveDetaillee,
+  historiqueAttributions,
 };

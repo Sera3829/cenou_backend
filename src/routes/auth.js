@@ -6,7 +6,7 @@ const {
   registerValidation,
   loginValidation,
   validate,
-} = require('../utils/validators');
+} = require('../validators/authValidator');
 
 /**
  * @route   POST /api/auth/register
