@@ -1,239 +1,51 @@
-const db = require('../config/database');
-const { hashPassword, comparePassword } = require('../utils/hash');
-const { generateToken } = require('../utils/jwt');
-const { db: firebaseDb, isFirebaseAvailable } = require('../config/firebase');
+/**
+ * Contrôleur auth : traduction HTTP ↔ service.
+ * Aucune logique métier ni SQL ici — voir services/authService.js.
+ */
+const authService = require('../services/authService');
+const { repondreErreur } = require('../utils/httpError');
 
 /**
- * Inscription d'un nouvel étudiant — avec auto-attribution de chambre
  * POST /api/auth/register
  */
 const register = async (req, res) => {
-  const client = await db.getClient();
-
   try {
     const { matricule, nom, prenom, email, telephone, mot_de_passe } = req.body;
 
-    // ── Unicité matricule ──────────────────────────────────────────────
-    const existingMatricule = await client.query(
-      'SELECT id FROM utilisateurs WHERE matricule = $1', [matricule]
-    );
-    if (existingMatricule.rows.length > 0) {
-      return res.status(409).json({ error: 'Ce matricule est déjà enregistré' });
-    }
-
-    // ── Unicité email ──────────────────────────────────────────────────
-    const existingEmail = await client.query(
-      'SELECT id FROM utilisateurs WHERE email = $1', [email]
-    );
-    if (existingEmail.rows.length > 0) {
-      return res.status(409).json({ error: 'Cet email est déjà enregistré' });
-    }
-
-    const hashedPassword = await hashPassword(mot_de_passe);
-
-    await client.query('BEGIN');
-
-    // ── Créer l'utilisateur ────────────────────────────────────────────
-    const result = await client.query(
-      `INSERT INTO utilisateurs (matricule, nom, prenom, email, telephone, mot_de_passe, role, statut)
-       VALUES ($1, $2, $3, $4, $5, $6, 'ETUDIANT', 'ACTIF')
-       RETURNING id, matricule, nom, prenom, email, telephone, role, statut, created_at`,
-      [matricule, nom, prenom, email, telephone || null, hashedPassword]
-    );
-    const newUser = result.rows[0];
-
-    // ── Auto-attribution : première chambre disponible ─────────────────
-    // FOR UPDATE SKIP LOCKED : deux inscriptions simultanées ne peuvent pas
-    // obtenir la même chambre (chacune verrouille une ligne différente).
-    const chambre = await client.query(`
-      SELECT id FROM logements
-      WHERE statut = 'DISPONIBLE'
-      ORDER BY centre_id ASC, id ASC
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
-    `);
-
-    let attribution = null;
-    if (chambre.rows.length > 0) {
-      const logementId = chambre.rows[0].id;
-      const dateDebut  = new Date().toISOString().split('T')[0];
-
-      await client.query(`
-        INSERT INTO attributions (utilisateur_id, logement_id, date_debut, statut)
-        VALUES ($1, $2, $3, 'ACTIVE')
-      `, [newUser.id, logementId, dateDebut]);
-
-      await client.query(
-        `UPDATE logements SET statut = 'OCCUPE' WHERE id = $1`, [logementId]
-      );
-
-      // Récupérer les infos chambre pour la réponse
-      const infos = await client.query(`
-        SELECT l.numero_chambre, l.type_chambre, l.prix_mensuel::integer as loyer_mensuel,
-               c.nom as nom_centre, c.ville
-        FROM logements l
-        JOIN centres c ON l.centre_id = c.id
-        WHERE l.id = $1
-      `, [logementId]);
-
-      if (infos.rows.length > 0) attribution = infos.rows[0];
-      console.log(`✅ Chambre ${infos.rows[0]?.numero_chambre} attribuée à ${matricule}`);
-    } else {
-      console.warn(`⚠️ Aucune chambre disponible pour ${matricule}`);
-    }
-
-    await client.query('COMMIT');
-
-    // ── Token JWT ──────────────────────────────────────────────────────
-    const token = generateToken({
-      userId: newUser.id, matricule: newUser.matricule, role: newUser.role,
+    const { user, attribution, token } = await authService.inscrire({
+      matricule, nom, prenom, email, telephone, mot_de_passe,
     });
-
-    // ── Firebase (non bloquant) ────────────────────────────────────────
-    if (isFirebaseAvailable()) {
-      try {
-        await firebaseDb.collection('sessions').doc(newUser.id.toString()).set({
-          userId: newUser.id, token,
-          loginAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        });
-      } catch (e) { console.error('⚠️ Firebase (non bloquant):', e.message); }
-    }
 
     res.status(201).json({
       message: 'Inscription réussie',
       user: {
-        id: newUser.id,
-        matricule: newUser.matricule,
-        nom: newUser.nom,
-        prenom: newUser.prenom,
-        email: newUser.email,
-        telephone: newUser.telephone,
-        role: newUser.role,
+        id: user.id,
+        matricule: user.matricule,
+        nom: user.nom,
+        prenom: user.prenom,
+        email: user.email,
+        telephone: user.telephone,
+        role: user.role,
         numero_chambre: attribution?.numero_chambre ?? null,
-        nom_centre:     attribution?.nom_centre     ?? null,
-        loyer_mensuel:  attribution?.loyer_mensuel  ?? null,
+        nom_centre: attribution?.nom_centre ?? null,
+        loyer_mensuel: attribution?.loyer_mensuel ?? null,
       },
       token,
     });
-
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-
-    // Violation d'unicité (inscription simultanée avec même matricule/email) :
-    // les checks préalables ne suffisent pas, la contrainte UNIQUE tranche.
-    if (error.code === '23505') {
-      const champ = error.constraint?.includes('email') ? 'email' : 'matricule';
-      return res.status(409).json({ error: `Ce ${champ} est déjà enregistré` });
-    }
-
-    console.error('Erreur inscription:', error);
-    res.status(500).json({
-      error: 'Erreur lors de l\'inscription',
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
-    });
-  } finally {
-    client.release();
+    repondreErreur(res, error, 'Erreur lors de l\'inscription');
   }
 };
 
 /**
- * Connexion d'un utilisateur
  * POST /api/auth/login
  */
 const login = async (req, res) => {
   try {
     const { identifiant, mot_de_passe } = req.body;
+    const plateforme = req.headers['x-platform'] || '';
 
-    // Rechercher l'utilisateur par matricule OU email
-    const result = await db.query(
-      `SELECT 
-        u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 
-        u.mot_de_passe, u.role, u.statut,
-        l.numero_chambre,
-        l.type_chambre,
-        l.prix_mensuel::integer AS loyer_mensuel,  -- ✅ Cast en integer
-        c.nom AS nom_centre,
-        c.ville,
-        a.date_debut,
-        a.date_fin,
-        a.statut AS statut_attribution
-       FROM utilisateurs u
-       LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
-       LEFT JOIN logements l ON a.logement_id = l.id
-       LEFT JOIN centres c ON l.centre_id = c.id
-       WHERE (u.matricule = $1 OR u.email = $1)`,
-      [identifiant]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(401).json({
-        error: 'Identifiant ou mot de passe incorrect',
-      });
-    }
-
-    const user = result.rows[0];
-
-    // Vérifier le statut du compte
-    if (user.statut !== 'ACTIF') {
-      return res.status(403).json({
-        error: 'Compte désactivé ou suspendu. Contactez l\'administration.',
-      });
-    }
-
-    // Vérifier le mot de passe
-    const isPasswordValid = await comparePassword(mot_de_passe, user.mot_de_passe);
-
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        error: 'Identifiant ou mot de passe incorrect',
-      });
-    }
-
-    // Session unique : un nouveau login écrase l'ancienne session (l'ancien
-    // token devient invalide via le contrôle dans getMe). On ne bloque plus
-    // avec un 409 : un téléphone perdu/réinstallé verrouillait le compte 24h.
-
-    // Bloquer Admin/Gestionnaire sur mobile
-    // Le frontend mobile envoie un header 'x-platform: mobile'
-    const platform = req.headers['x-platform'] || '';
-    const userAgent = req.headers['user-agent'] || '';
-    const isMobileRequest = platform === 'mobile';
-
-    if (isMobileRequest && ['ADMIN', 'GESTIONNAIRE'].includes(user.role)) {
-      return res.status(403).json({
-        error: 'Accès non autorisé. Les administrateurs et gestionnaires doivent utiliser le dashboard web.',
-      });
-    }
-
-    // Générer le token JWT
-    const token = generateToken({
-      userId: user.id,
-      matricule: user.matricule,
-      role: user.role,
-    });
-
-    // Enregistrer la session dans Firebase (optionnel)
-    if (isFirebaseAvailable()) {
-      try {
-        await firebaseDb.collection('sessions').doc(user.id.toString()).set({
-          userId: user.id,
-          token: token,
-          loginAt: new Date().toISOString(),
-          lastActivity: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        });
-        console.log('✅ Session Firebase créée');
-      } catch (firebaseError) {
-        console.error('⚠️ Erreur Firebase (non bloquante):', firebaseError.message);
-      }
-    }
-
-    // Mettre à jour la date de dernière connexion
-    await db.query(
-      'UPDATE utilisateurs SET updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [user.id]
-    );
+    const { user, token } = await authService.connecter({ identifiant, mot_de_passe, plateforme });
 
     res.json({
       message: 'Connexion réussie',
@@ -251,154 +63,47 @@ const login = async (req, res) => {
         date_debut: user.date_debut,
         date_fin: user.date_fin,
       },
-      token: token,
+      token,
     });
   } catch (error) {
-    console.error('Erreur lors de la connexion:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la connexion',
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
-    });
+    repondreErreur(res, error, 'Erreur lors de la connexion');
   }
 };
 
 /**
- * Déconnexion d'un utilisateur
  * POST /api/auth/logout
  */
 const logout = async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    // Supprimer la session de Firebase (si disponible)
-    if (isFirebaseAvailable()) {
-      try {
-        await firebaseDb.collection('sessions').doc(userId.toString()).delete();
-        console.log('✅ Session Firebase supprimée');
-      } catch (firebaseError) {
-        console.error('⚠️ Erreur Firebase (non bloquante):', firebaseError.message);
-      }
-    }
-
-    res.json({
-      message: 'Déconnexion réussie',
-    });
+    await authService.deconnecter(req.user.id);
+    res.json({ message: 'Déconnexion réussie' });
   } catch (error) {
-    console.error('Erreur lors de la déconnexion:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la déconnexion',
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
-    });
+    repondreErreur(res, error, 'Erreur lors de la déconnexion');
   }
 };
 
 /**
- * Récupérer les informations de l'utilisateur connecté
  * GET /api/auth/me
  */
 const getMe = async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    // 🔒 Vérifier que le token actuel correspond à la session Firebase active
-    if (isFirebaseAvailable()) {
-      try {
-        const sessionDoc = await firebaseDb
-          .collection('sessions')
-          .doc(userId.toString())
-          .get();
-
-        if (sessionDoc.exists) {
-          const sessionData = sessionDoc.data();
-          const currentToken = req.headers['authorization']?.replace('Bearer ', '');
-          
-          // Si le token ne correspond pas à la session active → session invalide
-          if (sessionData.token && sessionData.token !== currentToken) {
-            return res.status(401).json({
-              error: 'Session invalide. Veuillez vous reconnecter.',
-            });
-          }
-        }
-      } catch (firebaseError) {
-        console.error('⚠️ Erreur vérification session Firebase:', firebaseError.message);
-        // Non bloquant
-      }
-    }
-
-    const result = await db.query(
-      `SELECT 
-        u.id, u.matricule, u.nom, u.prenom, u.email, u.telephone, 
-        u.role, u.statut, u.created_at,
-        l.numero_chambre,
-        l.type_chambre,
-        l.prix_mensuel::integer AS loyer_mensuel,
-        c.nom AS nom_centre,
-        c.ville,
-        a.date_debut,
-        a.date_fin,
-        a.statut AS statut_attribution
-       FROM utilisateurs u
-       LEFT JOIN attributions a ON u.id = a.utilisateur_id AND a.statut = 'ACTIVE'
-       LEFT JOIN logements l ON a.logement_id = l.id
-       LEFT JOIN centres c ON l.centre_id = c.id
-       WHERE u.id = $1`,
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur introuvable' });
-    }
-
-    res.json({ user: result.rows[0] });
-
+    const tokenCourant = req.headers['authorization']?.replace('Bearer ', '');
+    const user = await authService.profil(req.user.id, tokenCourant);
+    res.json({ user });
   } catch (error) {
-    console.error('Erreur lors de la récupération du profil:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la récupération du profil',
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
-    });
+    repondreErreur(res, error, 'Erreur lors de la récupération du profil');
   }
 };
 
 /**
- * Rafraîchir le token JWT
  * POST /api/auth/refresh
  */
 const refreshToken = async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    // Générer un nouveau token
-    const newToken = generateToken({
-      userId: req.user.id,
-      matricule: req.user.matricule,
-      role: req.user.role,
-    });
-
-    // Mettre à jour la session dans Firebase (si disponible)
-    if (isFirebaseAvailable()) {
-      try {
-        await firebaseDb.collection('sessions').doc(userId.toString()).update({
-          token: newToken,
-          lastActivity: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        });
-        console.log('✅ Session Firebase mise à jour');
-      } catch (firebaseError) {
-        console.error('⚠️ Erreur Firebase (non bloquante):', firebaseError.message);
-      }
-    }
-
-    res.json({
-      message: 'Token rafraîchi avec succès',
-      token: newToken,
-    });
+    const token = await authService.rafraichirToken(req.user);
+    res.json({ message: 'Token rafraîchi avec succès', token });
   } catch (error) {
-    console.error('Erreur lors du rafraîchissement du token:', error);
-    res.status(500).json({
-      error: 'Erreur lors du rafraîchissement du token',
-      details: process.env.NODE_ENV !== 'production' ? error.message : undefined,
-    });
+    repondreErreur(res, error, 'Erreur lors du rafraîchissement du token');
   }
 };
 
