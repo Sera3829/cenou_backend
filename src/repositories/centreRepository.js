@@ -39,4 +39,16 @@ const etudiantsDuCentre = async (centreId, exec = db) => {
   return r.rows;
 };
 
-module.exports = { liste, parId, etudiantsDuCentre };
+/** IDs des utilisateurs ayant une attribution active dans un centre */
+const idsUtilisateursActifs = async (centreId, exec = db) => {
+  const r = await exec.query(
+    `SELECT DISTINCT a.utilisateur_id
+     FROM attributions a
+     JOIN logements l ON a.logement_id = l.id
+     WHERE l.centre_id = $1 AND a.statut = 'ACTIVE'`,
+    [centreId]
+  );
+  return r.rows.map((row) => row.utilisateur_id);
+};
+
+module.exports = { liste, parId, etudiantsDuCentre, idsUtilisateursActifs };
