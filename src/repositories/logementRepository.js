@@ -40,6 +40,34 @@ const infosLogement = async (logementId, exec = db) => {
   return r.rows[0] || null;
 };
 
+/** Liste des logements, filtrable par centre et/ou statut */
+const listeLogements = async ({ centre_id, statut }, exec = db) => {
+  let sql = `SELECT id, centre_id, numero_chambre, type_chambre,
+                    prix_mensuel::integer as prix_mensuel, statut, created_at
+             FROM logements WHERE 1=1`;
+  const params = [];
+  let idx = 1;
+  if (centre_id) { sql += ` AND centre_id = $${idx++}`; params.push(parseInt(centre_id)); }
+  if (statut) { sql += ` AND statut = $${idx++}`; params.push(statut); }
+  sql += ` ORDER BY type_chambre ASC, numero_chambre ASC`;
+  const r = await exec.query(sql, params);
+  return r.rows;
+};
+
+/** Logement détaillé (avec centre) par id */
+const logementParId = async (logementId, exec = db) => {
+  const r = await exec.query(
+    `SELECT l.id, l.centre_id, l.numero_chambre, l.type_chambre,
+            l.prix_mensuel::integer as prix_mensuel, l.statut, l.created_at,
+            c.nom as centre_nom, c.ville
+     FROM logements l
+     JOIN centres c ON l.centre_id = c.id
+     WHERE l.id = $1`,
+    [logementId]
+  );
+  return r.rows[0] || null;
+};
+
 const insererAttribution = async ({ utilisateurId, logementId, dateDebut, dateFin = null }, exec = db) => {
   await exec.query(
     `INSERT INTO attributions (utilisateur_id, logement_id, date_debut, date_fin, statut)
@@ -143,4 +171,6 @@ module.exports = {
   centreExiste,
   attributionActiveDetaillee,
   historiqueAttributions,
+  listeLogements,
+  logementParId,
 };
