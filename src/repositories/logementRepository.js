@@ -54,6 +54,75 @@ const listeLogements = async ({ centre_id, statut }, exec = db) => {
   return r.rows;
 };
 
+/** Chambres d'un centre, avec l'occupant actif éventuel (pour l'admin) */
+const logementsDuCentre = async (centreId, exec = db) => {
+  const r = await exec.query(
+    `SELECT l.id, l.numero_chambre, l.type_chambre,
+            l.prix_mensuel::integer as prix_mensuel, l.statut, l.created_at,
+            u.id AS occupant_id, u.matricule AS occupant_matricule,
+            u.nom AS occupant_nom, u.prenom AS occupant_prenom
+     FROM logements l
+     LEFT JOIN attributions a ON a.logement_id = l.id AND a.statut = 'ACTIVE'
+     LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+     WHERE l.centre_id = $1
+     ORDER BY l.numero_chambre ASC`,
+    [centreId]
+  );
+  return r.rows;
+};
+
+const numeroExisteDansCentre = async (centreId, numero, exclureId = null, exec = db) => {
+  const r = exclureId
+    ? await exec.query(
+        'SELECT id FROM logements WHERE centre_id = $1 AND numero_chambre = $2 AND id != $3',
+        [centreId, numero, exclureId])
+    : await exec.query(
+        'SELECT id FROM logements WHERE centre_id = $1 AND numero_chambre = $2',
+        [centreId, numero]);
+  return r.rows.length > 0;
+};
+
+const creerLogement = async ({ centreId, numeroChambre, typeChambre, prixMensuel, statut }, exec = db) => {
+  const r = await exec.query(
+    `INSERT INTO logements (centre_id, numero_chambre, type_chambre, prix_mensuel, statut)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, centre_id, numero_chambre, type_chambre,
+               prix_mensuel::integer as prix_mensuel, statut, created_at`,
+    [centreId, numeroChambre, typeChambre, prixMensuel, statut || 'DISPONIBLE']
+  );
+  return r.rows[0];
+};
+
+const mettreAJourLogement = async (logementId, champs, exec = db) => {
+  const updates = [];
+  const params = [];
+  let i = 1;
+  if (champs.numeroChambre !== undefined) { updates.push(`numero_chambre = $${i}`); params.push(champs.numeroChambre); i++; }
+  if (champs.typeChambre !== undefined) { updates.push(`type_chambre = $${i}`); params.push(champs.typeChambre); i++; }
+  if (champs.prixMensuel !== undefined) { updates.push(`prix_mensuel = $${i}`); params.push(champs.prixMensuel); i++; }
+  if (champs.statut !== undefined) { updates.push(`statut = $${i}`); params.push(champs.statut); i++; }
+  if (updates.length === 0) return logementParId(logementId, exec);
+  params.push(logementId);
+  const r = await exec.query(
+    `UPDATE logements SET ${updates.join(', ')} WHERE id = $${i}
+     RETURNING id, centre_id, numero_chambre, type_chambre,
+               prix_mensuel::integer as prix_mensuel, statut, created_at`,
+    params
+  );
+  return r.rows[0] || null;
+};
+
+const supprimerLogement = async (logementId, exec = db) => {
+  const r = await exec.query('DELETE FROM logements WHERE id = $1 RETURNING id', [logementId]);
+  return r.rows.length > 0;
+};
+
+/** Statut brut d'un logement (garde-fou suppression/édition) */
+const statutLogement = async (logementId, exec = db) => {
+  const r = await exec.query('SELECT id, centre_id, statut FROM logements WHERE id = $1', [logementId]);
+  return r.rows[0] || null;
+};
+
 /** Logement détaillé (avec centre) par id */
 const logementParId = async (logementId, exec = db) => {
   const r = await exec.query(
@@ -173,4 +242,10 @@ module.exports = {
   historiqueAttributions,
   listeLogements,
   logementParId,
+  logementsDuCentre,
+  numeroExisteDansCentre,
+  creerLogement,
+  mettreAJourLogement,
+  supprimerLogement,
+  statutLogement,
 };
