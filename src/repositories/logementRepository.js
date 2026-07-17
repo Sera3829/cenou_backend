@@ -82,15 +82,64 @@ const numeroExisteDansCentre = async (centreId, numero, exclureId = null, exec =
   return r.rows.length > 0;
 };
 
-const creerLogement = async ({ centreId, numeroChambre, typeChambre, prixMensuel, statut }, exec = db) => {
+const creerLogement = async (
+  { centreId, pavillonId, numeroChambre, typeChambre, prixMensuel, statut },
+  exec = db
+) => {
   const r = await exec.query(
-    `INSERT INTO logements (centre_id, numero_chambre, type_chambre, prix_mensuel, statut)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, centre_id, numero_chambre, type_chambre,
+    `INSERT INTO logements (centre_id, pavillon_id, numero_chambre, type_chambre, prix_mensuel, statut)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, centre_id, pavillon_id, numero_chambre, type_chambre,
                prix_mensuel::integer as prix_mensuel, statut, created_at`,
-    [centreId, numeroChambre, typeChambre, prixMensuel, statut || 'DISPONIBLE']
+    [centreId, pavillonId || null, numeroChambre, typeChambre, prixMensuel, statut || 'DISPONIBLE']
   );
   return r.rows[0];
+};
+
+/**
+ * Création en masse de chambres dans un pavillon.
+ * @param numeros liste de numéros déjà générés (incrémentation faite en amont)
+ * Insère en une requête ; ignore les numéros déjà présents dans le centre
+ * (contrainte UNIQUE(centre_id, numero_chambre)). Retourne les chambres créées.
+ */
+const creerLogementsEnMasse = async (
+  { centreId, pavillonId, numeros, typeChambre, prixMensuel },
+  exec = db
+) => {
+  if (numeros.length === 0) return [];
+  const values = [];
+  const params = [centreId, pavillonId, typeChambre, prixMensuel];
+  let i = params.length + 1;
+  for (const numero of numeros) {
+    values.push(`($1, $2, $${i}, $3, $4, 'DISPONIBLE')`);
+    params.push(numero);
+    i++;
+  }
+  const r = await exec.query(
+    `INSERT INTO logements (centre_id, pavillon_id, numero_chambre, type_chambre, prix_mensuel, statut)
+     VALUES ${values.join(', ')}
+     ON CONFLICT (centre_id, numero_chambre) DO NOTHING
+     RETURNING id, numero_chambre, type_chambre, prix_mensuel::integer as prix_mensuel, statut`,
+    params
+  );
+  return r.rows;
+};
+
+/** Chambres d'un pavillon, avec l'occupant actif éventuel (pour l'admin) */
+const logementsDuPavillon = async (pavillonId, exec = db) => {
+  const r = await exec.query(
+    `SELECT l.id, l.numero_chambre, l.type_chambre,
+            l.prix_mensuel::integer as prix_mensuel, l.statut, l.created_at,
+            u.id AS occupant_id, u.matricule AS occupant_matricule,
+            u.nom AS occupant_nom, u.prenom AS occupant_prenom
+     FROM logements l
+     LEFT JOIN attributions a ON a.logement_id = l.id AND a.statut = 'ACTIVE'
+     LEFT JOIN utilisateurs u ON a.utilisateur_id = u.id
+     WHERE l.pavillon_id = $1
+     ORDER BY l.numero_chambre ASC`,
+    [pavillonId]
+  );
+  return r.rows;
 };
 
 const mettreAJourLogement = async (logementId, champs, exec = db) => {
@@ -245,6 +294,8 @@ module.exports = {
   logementsDuCentre,
   numeroExisteDansCentre,
   creerLogement,
+  creerLogementsEnMasse,
+  logementsDuPavillon,
   mettreAJourLogement,
   supprimerLogement,
   statutLogement,

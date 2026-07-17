@@ -11,11 +11,12 @@ const liste = async (exec = db) => {
   return r.rows;
 };
 
-/** Liste enrichie de statistiques (logements, occupés, disponibles, résidents) */
+/** Liste enrichie de statistiques (pavillons, logements, occupation, résidents) */
 const listeAvecStats = async (exec = db) => {
   const r = await exec.query(
     `SELECT
        c.id, c.nom, c.ville, c.adresse, c.capacite_totale, c.created_at,
+       (SELECT COUNT(*) FROM pavillons p WHERE p.centre_id = c.id)      AS total_pavillons,
        COUNT(l.id)                                              AS total_logements,
        COUNT(l.id) FILTER (WHERE l.statut = 'OCCUPE')          AS logements_occupes,
        COUNT(l.id) FILTER (WHERE l.statut = 'DISPONIBLE')      AS logements_disponibles,

@@ -23,6 +23,7 @@ const rapportRoutes      = require('./routes/rapports');
 const adminRoutes        = require('./routes/admin');
 const centreRoutes       = require('./routes/centreRoutes');
 const logementRoutes     = require('./routes/logementRoutes');
+const pavillonRoutes     = require('./routes/pavillonRoutes');
 
 const db           = require('./config/database');
 const errorHandler = require('./middlewares/errorHandler');
@@ -116,6 +117,7 @@ app.use('/api/rapports',      rapportRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/centres',       centreRoutes);
 app.use('/api/logements',     logementRoutes);
+app.use('/api/pavillons',     pavillonRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({
