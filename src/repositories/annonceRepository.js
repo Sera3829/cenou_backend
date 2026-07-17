@@ -58,6 +58,28 @@ const idsGestionnaires = async (exec = db) => {
   return r.rows.map((row) => row.id);
 };
 
+// Gestionnaires rattachés à un centre donné (messagerie interne par centre).
+const idsGestionnairesDuCentre = async (centreId, exec = db) => {
+  const r = await exec.query(
+    `SELECT id FROM utilisateurs
+     WHERE statut = 'ACTIF' AND role = 'GESTIONNAIRE' AND centre_id = $1`,
+    [centreId]
+  );
+  return r.rows.map((row) => row.id);
+};
+
+// Sous-ensemble du staff (admin/gestionnaire) parmi une liste d'ids — message direct.
+const idsStaffParmi = async (userIds, exec = db) => {
+  if (!userIds || userIds.length === 0) return [];
+  const placeholders = userIds.map((_, i) => `$${i + 1}`).join(',');
+  const r = await exec.query(
+    `SELECT id FROM utilisateurs
+     WHERE id IN (${placeholders}) AND statut = 'ACTIF' AND role IN ('ADMIN', 'GESTIONNAIRE')`,
+    userIds
+  );
+  return r.rows.map((row) => row.id);
+};
+
 const nomCentre = async (centreId, exec = db) => {
   const r = await exec.query('SELECT nom FROM centres WHERE id = $1', [centreId]);
   return r.rows[0]?.nom || null;
@@ -233,6 +255,40 @@ const etudiantAAcces = async (annonceId, userId, exec = db) => {
   return r.rows.length > 0;
 };
 
+// ── Messagerie interne (staff : admin / gestionnaire) ──────────────────────
+// La boîte de réception s'appuie sur annonce_destinataires (destinataires déjà
+// résolus à l'envoi), donc indépendante de Firebase.
+
+const listePourStaff = async (userId, limit, offset, exec = db) => {
+  const r = await exec.query(
+    `SELECT a.*, c.nom as centre_nom,
+            u.nom as created_by_nom, u.prenom as created_by_prenom,
+            ad.lu, ad.date_lecture, ad.date_envoi
+     FROM annonce_destinataires ad
+     JOIN annonces a ON ad.annonce_id = a.id
+     LEFT JOIN centres c ON a.centre_id = c.id
+     LEFT JOIN utilisateurs u ON a.created_by = u.id
+     WHERE ad.utilisateur_id = $1 AND a.statut = 'PUBLIE'
+       AND (a.date_expiration IS NULL OR a.date_expiration > CURRENT_TIMESTAMP)
+     ORDER BY a.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [userId, limit, offset]
+  );
+  return r.rows;
+};
+
+// Marque une annonce comme lue pour l'utilisateur courant (idempotent).
+const marquerLue = async (annonceId, userId, exec = db) => {
+  const r = await exec.query(
+    `UPDATE annonce_destinataires
+       SET lu = TRUE, date_lecture = CURRENT_TIMESTAMP
+     WHERE annonce_id = $1 AND utilisateur_id = $2 AND lu = FALSE
+     RETURNING id`,
+    [annonceId, userId]
+  );
+  return r.rows.length > 0;
+};
+
 // ── Modification ─────────────────────────────────────────────────────────
 
 const changerStatut = async (annonceId, statut, exec = db) => {
@@ -255,6 +311,8 @@ module.exports = {
   idsEtudiantsDuCentre,
   idsEtudiantsParmi,
   idsGestionnaires,
+  idsGestionnairesDuCentre,
+  idsStaffParmi,
   nomCentre,
   assurerTableDestinataires,
   enregistrerDestinataires,
@@ -263,6 +321,8 @@ module.exports = {
   detailComplet,
   listeAdmin,
   listePourEtudiant,
+  listePourStaff,
+  marquerLue,
   compteNonLues,
   detailPourUtilisateur,
   etudiantAAcces,

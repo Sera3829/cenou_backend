@@ -35,6 +35,26 @@ const getAnnoncesEtudiant = async (req, res) => {
   }
 };
 
+/** GET /api/annonces/inbox — messagerie interne du staff connecté */
+const getInbox = async (req, res) => {
+  try {
+    const { messages, unreadCount } = await annonceService.inboxStaff(req.user.id, req.query);
+    res.json({ success: true, message: 'Messagerie récupérée', data: messages, unread_count: unreadCount });
+  } catch (error) {
+    repondreErreur(res, error, 'Erreur lors de la récupération de la messagerie');
+  }
+};
+
+/** PUT /api/annonces/:annonceId/lu — marque le message comme lu */
+const marquerLu = async (req, res) => {
+  try {
+    const { unreadCount } = await annonceService.marquerLue(req.params.annonceId, req.user.id);
+    res.json({ success: true, message: 'Message marqué comme lu', unread_count: unreadCount });
+  } catch (error) {
+    repondreErreur(res, error, 'Erreur lors du marquage du message');
+  }
+};
+
 /** GET /api/annonces/:annonceId */
 const getAnnonceById = async (req, res) => {
   try {
@@ -69,6 +89,8 @@ module.exports = {
   sendAnnonce,
   getAnnoncesAdmin,
   getAnnoncesEtudiant,
+  getInbox,
+  marquerLu,
   updateAnnonceStatut,
   deleteAnnonce,
   getAnnonceById,
