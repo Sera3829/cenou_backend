@@ -33,6 +33,7 @@ const creerChambreValidation = [
   body('prix_mensuel').notEmpty().withMessage('Le prix mensuel est requis')
     .isInt({ min: 0 }).withMessage('Le prix doit être un entier positif'),
   body('statut').optional().isIn(STATUTS_CHAMBRE).withMessage('Statut invalide'),
+  body('ajuster').optional().isBoolean().withMessage('ajuster doit être un booléen'),
 ];
 
 const bulkChambreValidation = [
@@ -47,6 +48,7 @@ const bulkChambreValidation = [
   body('type_chambre').isIn(TYPES_CHAMBRE).withMessage('Type invalide (SIMPLE, DOUBLE ou STUDIO)'),
   body('prix_mensuel').notEmpty().withMessage('Le prix mensuel est requis')
     .isInt({ min: 0 }).withMessage('Le prix doit être un entier positif'),
+  body('ajuster').optional().isBoolean().withMessage('ajuster doit être un booléen'),
 ];
 
 module.exports = {

@@ -82,6 +82,15 @@ const nbChambresOccupees = async (pavillonId, exec = db) => {
   return r.rows[0].n;
 };
 
+/** Nombre total de chambres d'un pavillon (contrôle de capacité) */
+const nbChambres = async (pavillonId, exec = db) => {
+  const r = await exec.query(
+    `SELECT COUNT(*)::int AS n FROM logements WHERE pavillon_id = $1`,
+    [pavillonId]
+  );
+  return r.rows[0].n;
+};
+
 module.exports = {
   listeDuCentre,
   parId,
@@ -90,4 +99,5 @@ module.exports = {
   mettreAJour,
   supprimer,
   nbChambresOccupees,
+  nbChambres,
 };

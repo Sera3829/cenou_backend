@@ -132,3 +132,62 @@ describe('Création de chambres en masse', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('Contrôle de capacité des pavillons', () => {
+  test('409 CAPACITE_DEPASSEE : bulk qui excède la capacité sans ajuster', async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [admin] })                               // auth
+      .mockResolvedValueOnce({ rows: [{ id: 7, centre_id: 1, capacite: 5 }] }) // parId
+      .mockResolvedValueOnce({ rows: [{ n: 0 }] });                            // nbChambres → 0
+    const res = await request(app).post('/api/pavillons/7/logements/bulk')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .send({ prefixe: 'C-', debut: 1, nombre: 10, type_chambre: 'SIMPLE', prix_mensuel: 9000 });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CAPACITE_DEPASSEE');
+    expect(res.body.capacite).toBe(5);
+    expect(res.body.total).toBe(10);
+  });
+
+  test('bulk avec ajuster:true → relève la capacité et crée les chambres', async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [admin] })                               // auth
+      .mockResolvedValueOnce({ rows: [{ id: 7, centre_id: 1, capacite: 5 }] }) // parId
+      .mockResolvedValueOnce({ rows: [{ n: 0 }] })                             // nbChambres → 0
+      .mockResolvedValueOnce({ rows: [{ id: 7, capacite: 10 }] })             // mettreAJour (bump)
+      .mockResolvedValueOnce({ rows: Array.from({ length: 10 }, (_, i) => ({ id: 40 + i, numero_chambre: `C-${i + 1}` })) }); // INSERT
+    const res = await request(app).post('/api/pavillons/7/logements/bulk')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .send({ prefixe: 'C-', debut: 1, nombre: 10, type_chambre: 'SIMPLE', prix_mensuel: 9000, ajuster: true });
+    expect(res.status).toBe(201);
+    expect(res.body.data.crees).toBe(10);
+    // La capacité a bien été relevée (UPDATE pavillons ... capacite)
+    const updateCall = db.query.mock.calls.find(([sql]) => String(sql).includes('UPDATE pavillons'));
+    expect(updateCall).toBeDefined();
+    expect(updateCall[1]).toContain(10);
+  });
+
+  test('409 CAPACITE_DEPASSEE : chambre unique qui excède la capacité', async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [admin] })                               // auth
+      .mockResolvedValueOnce({ rows: [{ id: 7, centre_id: 1, capacite: 2 }] }) // parId
+      .mockResolvedValueOnce({ rows: [] })                                     // numeroExisteDansCentre → libre
+      .mockResolvedValueOnce({ rows: [{ n: 2 }] });                            // nbChambres → 2 (plein)
+    const res = await request(app).post('/api/pavillons/7/logements')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .send({ numero_chambre: 'C-003', type_chambre: 'SIMPLE', prix_mensuel: 9000 });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CAPACITE_DEPASSEE');
+  });
+
+  test('capacité 0 (non définie) : aucun contrôle, création normale', async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [admin] })                               // auth
+      .mockResolvedValueOnce({ rows: [{ id: 7, centre_id: 1, capacite: 0 }] }) // parId (pas de limite)
+      .mockResolvedValueOnce({ rows: [{ id: 40, numero_chambre: 'C-001' }] }); // INSERT (pas de nbChambres)
+    const res = await request(app).post('/api/pavillons/7/logements/bulk')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .send({ prefixe: 'C-', debut: 1, nombre: 1, type_chambre: 'SIMPLE', prix_mensuel: 9000 });
+    expect(res.status).toBe(201);
+    expect(res.body.data.crees).toBe(1);
+  });
+});

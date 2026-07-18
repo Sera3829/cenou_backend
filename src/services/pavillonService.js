@@ -57,13 +57,40 @@ const listerChambres = async (pavillonId) => {
   return logementRepository.logementsDuPavillon(pavillonId);
 };
 
+/**
+ * Contrôle de capacité avant ajout de chambres.
+ * - capacité ≤ 0 : aucune limite définie, on laisse passer.
+ * - dépassement sans `ajuster` : lève 409 CAPACITE_DEPASSEE (avec les chiffres).
+ * - dépassement avec `ajuster` : relève la capacité du pavillon au nouveau total.
+ */
+const verifierCapacite = async (pavillon, ajout, ajuster) => {
+  const capacite = pavillon.capacite || 0;
+  if (capacite <= 0) return;
+  const actuel = await pavillonRepository.nbChambres(pavillon.id);
+  const total = actuel + ajout;
+  if (total <= capacite) return;
+  if (!ajuster) {
+    throw new HttpError(
+      409,
+      `Capacité du pavillon dépassée : capacité ${capacite}, ${actuel} chambre(s) déjà présente(s), ` +
+        `ajout de ${ajout} demandé (total ${total}). Ajustez la capacité pour continuer.`,
+      { code: 'CAPACITE_DEPASSEE', capacite, actuel, demande: ajout, total }
+    );
+  }
+  await pavillonRepository.mettreAJour(pavillon.id, { capacite: total });
+};
+
 /** Créer une seule chambre dans un pavillon */
-const creerChambre = async (pavillonId, { numero_chambre, type_chambre, prix_mensuel, statut }) => {
+const creerChambre = async (
+  pavillonId,
+  { numero_chambre, type_chambre, prix_mensuel, statut, ajuster }
+) => {
   const pavillon = await pavillonRepository.parId(pavillonId);
   if (!pavillon) throw new HttpError(404, 'Pavillon non trouvé');
   if (await logementRepository.numeroExisteDansCentre(pavillon.centre_id, numero_chambre)) {
     throw new HttpError(409, `La chambre ${numero_chambre} existe déjà dans ce centre`);
   }
+  await verifierCapacite(pavillon, 1, ajuster);
   return logementRepository.creerLogement({
     centreId: pavillon.centre_id,
     pavillonId,
@@ -95,7 +122,7 @@ const genererNumeros = ({ prefixe = '', debut = 1, nombre, padding = 0 }) => {
  */
 const creerChambresEnMasse = async (
   pavillonId,
-  { prefixe, debut, nombre, padding, type_chambre, prix_mensuel }
+  { prefixe, debut, nombre, padding, type_chambre, prix_mensuel, ajuster }
 ) => {
   const pavillon = await pavillonRepository.parId(pavillonId);
   if (!pavillon) throw new HttpError(404, 'Pavillon non trouvé');
@@ -104,6 +131,8 @@ const creerChambresEnMasse = async (
   if (!Number.isInteger(total) || total < 1 || total > MAX_BULK) {
     throw new HttpError(400, `Le nombre de chambres doit être entre 1 et ${MAX_BULK}`);
   }
+
+  await verifierCapacite(pavillon, total, ajuster);
 
   const numeros = genererNumeros({
     prefixe: prefixe || '',
