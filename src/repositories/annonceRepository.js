@@ -101,6 +101,31 @@ const assurerTableDestinataires = async (exec = db) => {
   `);
 };
 
+// Élargit la contrainte CHECK sur annonces.cible aux cibles de messagerie interne.
+// Best-effort, exécuté une seule fois par processus (garde-fou si migration_004
+// non passée). Idempotent ; sans effet si la contrainte est déjà à jour.
+let contrainteCibleOk = false;
+const assurerContrainteCible = async (exec = db) => {
+  if (contrainteCibleOk) return;
+  try {
+    await exec.query(`
+      DO $$
+      BEGIN
+        ALTER TABLE annonces DROP CONSTRAINT IF EXISTS annonces_cible_check;
+        ALTER TABLE annonces ADD CONSTRAINT annonces_cible_check
+          CHECK (cible IN ('TOUS','CENTRE_SPECIFIQUE','ETUDIANTS',
+                           'GESTIONNAIRES','GESTIONNAIRES_CENTRE','UTILISATEURS'));
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$;
+    `);
+    contrainteCibleOk = true;
+  } catch (e) {
+    // Non bloquant : si l'ALTER échoue (droits), l'INSERT lèvera l'erreur de
+    // contrainte et il faudra jouer database/migration_004_messagerie_cibles.sql.
+    console.warn('⚠️ assurerContrainteCible:', e.message);
+  }
+};
+
 const enregistrerDestinataires = async (annonceId, userIds, exec = db) => {
   if (userIds.length === 0) return;
   const values = [];
@@ -315,6 +340,7 @@ module.exports = {
   idsStaffParmi,
   nomCentre,
   assurerTableDestinataires,
+  assurerContrainteCible,
   enregistrerDestinataires,
   idsDestinataires,
   journaliserActivite,

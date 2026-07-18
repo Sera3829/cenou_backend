@@ -62,6 +62,9 @@ const creer = async (createdBy, data) => {
     throw new HttpError(400, 'user_ids est requis pour un message ciblé');
   }
 
+  // Garde-fou : s'assure que la contrainte cible accepte les cibles de messagerie.
+  await annonceRepository.assurerContrainteCible();
+
   const annonce = await annonceRepository.creer({
     titre, contenu, cible, centreId: centre_id, statut, createdBy,
     datePublication: date_publication, dateExpiration: date_expiration,

@@ -12,8 +12,12 @@ const express = require('express');
 const request = require('supertest');
 const db = require('../../src/config/database');
 const broadcast = require('../../src/services/notificationBroadcastService');
+const annonceRepository = require('../../src/repositories/annonceRepository');
 const annonceRoutes = require('../../src/routes/annonces');
 const { generateToken } = require('../../src/utils/jwt');
+
+// La garde de contrainte (DDL best-effort) ne doit pas toucher la base en test.
+jest.spyOn(annonceRepository, 'assurerContrainteCible').mockResolvedValue(undefined);
 
 const app = express();
 app.use(express.json());
