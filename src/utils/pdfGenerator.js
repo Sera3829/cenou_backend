@@ -126,12 +126,24 @@ function addOfficialHeader(doc) {
   return startY + 270;
 }
 
+// Réutilise l'instance ChartJSNodeCanvas par dimension : sa construction
+// (canvas natif + enregistrement Chart.js) est coûteuse et n'a pas à être
+// refaite à chaque graphique ni à chaque requête. Gros gain sur la génération.
+const _chartCanvasCache = new Map();
+function getChartCanvas(width, height) {
+  const key = `${width}x${height}`;
+  if (!_chartCanvasCache.has(key)) {
+    _chartCanvasCache.set(key, new ChartJSNodeCanvas({ width, height }));
+  }
+  return _chartCanvasCache.get(key);
+}
+
 /**
  * Générer un graphique en camembert
  */
 async function generatePieChart(data, width = 400, height = 300) {
   try {
-    const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height });
+    const chartJSNodeCanvas = getChartCanvas(width, height);
     
     const configuration = {
       type: 'pie',
@@ -179,7 +191,7 @@ async function generatePieChart(data, width = 400, height = 300) {
  */
 async function generateBarChart(data, width = 500, height = 300) {
   try {
-    const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height });
+    const chartJSNodeCanvas = getChartCanvas(width, height);
     
     const configuration = {
       type: 'bar',
@@ -868,6 +880,22 @@ const generateOccupationReportPDF = async (data, options = {}) => {
     }
   });
 };
+
+// Pré-chauffage au démarrage : rend un graphique factice une fois pour que le
+// tout premier rapport ne paie pas l'initialisation du canvas natif Chart.js.
+// Ignoré en test (NODE_ENV=test) ; échec silencieux (non bloquant).
+if (process.env.NODE_ENV !== 'test') {
+  (async () => {
+    try {
+      const dummy = { labels: ['-'], values: [1], title: '' };
+      await generatePieChart(dummy, 400, 300);
+      await generateBarChart(dummy, 500, 300);
+      console.log('✅ Générateur de graphiques pré-chauffé');
+    } catch (e) {
+      console.warn('⚠️ Pré-chauffage graphiques ignoré:', e.message);
+    }
+  })();
+}
 
 module.exports = {
   generateFinancialReportPDF,
