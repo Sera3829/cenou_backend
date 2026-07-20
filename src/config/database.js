@@ -10,9 +10,12 @@ console.log('Connecting to PostgreSQL via DATABASE_URL');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 3,                        // réduit : moins de connexions idle
-  min: 0,
-  idleTimeoutMillis: 10000,      // libère les connexions idle après 10s
+  max: 6,                        // le dashboard tire ~4 requêtes en parallèle
+  min: 0,                        // 0 la nuit → Neon peut s'endormir (pas de connexion maintenue)
+  // 65s > l'intervalle de sondage (45s) : pendant l'usage actif la connexion
+  // reste au chaud (plus de « connection established » à chaque requête) ;
+  // après 65s sans activité elle se ferme et Neon peut dormir.
+  idleTimeoutMillis: 65000,
   connectionTimeoutMillis: 35000,// 35s — Neon cold start jusqu'à 30s
   query_timeout: 60000,
 });
